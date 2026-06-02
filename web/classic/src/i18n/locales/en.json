@@ -3821,6 +3821,20 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "请求与响应": "Request and response",
+    "查看请求与响应": "View request and response",
+    "请求与响应详情": "Request and response details",
+    "请求输入": "Request input",
+    "请求参数": "Request parameters",
+    "返回输出": "Response output",
+    "原始返回": "Raw response",
+    "错误内容": "Error content",
+    "暂无记录内容": "No recorded content",
+    "该日志未记录请求或响应详情": "No request or response details were recorded for this log.",
+    "加载请求与响应详情失败": "Failed to load request and response details",
+    "已截断": "Truncated",
+    "内容已省略": "Content omitted",
+    "省略原因": "Omit reason"
   }
 }

@@ -41,6 +41,7 @@ const LogsTable = (logsData) => {
     copyText,
     showUserInfoFunc,
     openChannelAffinityUsageCacheModal,
+    openLogDetailModal,
     hasExpandableRows,
     isAdminUser,
     billingDisplayMode,
@@ -56,6 +57,7 @@ const LogsTable = (logsData) => {
       copyText,
       showUserInfoFunc,
       openChannelAffinityUsageCacheModal,
+      openLogDetailModal,
       isAdminUser,
       billingDisplayMode,
     });
@@ -65,6 +67,7 @@ const LogsTable = (logsData) => {
     copyText,
     showUserInfoFunc,
     openChannelAffinityUsageCacheModal,
+    openLogDetailModal,
     isAdminUser,
     billingDisplayMode,
   ]);

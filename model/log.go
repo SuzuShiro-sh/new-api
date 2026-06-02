@@ -610,14 +610,36 @@ func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64,
 			return total, ctx.Err()
 		}
 
-		result := LOG_DB.Where("created_at < ?", targetTimestamp).Limit(limit).Delete(&Log{})
-		if nil != result.Error {
-			return total, result.Error
+		var logs []Log
+		if err := LOG_DB.Select("id", "request_id").Where("created_at < ?", targetTimestamp).Order("id").Limit(limit).Find(&logs).Error; err != nil {
+			return total, err
+		}
+		if len(logs) == 0 {
+			break
 		}
 
-		total += result.RowsAffected
+		if err := LOG_DB.Transaction(func(tx *gorm.DB) error {
+			requestIds := make([]string, 0, len(logs))
+			logIds := make([]int, 0, len(logs))
+			for _, log := range logs {
+				logIds = append(logIds, log.Id)
+				if log.RequestId != "" {
+					requestIds = append(requestIds, log.RequestId)
+				}
+			}
+			if len(requestIds) > 0 {
+				if err := tx.Where("request_id IN ?", requestIds).Delete(&LogDetail{}).Error; err != nil {
+					return err
+				}
+			}
+			return tx.Where("id IN ?", logIds).Delete(&Log{}).Error
+		}); err != nil {
+			return total, err
+		}
 
-		if result.RowsAffected < int64(limit) {
+		total += int64(len(logs))
+
+		if len(logs) < limit {
 			break
 		}
 	}

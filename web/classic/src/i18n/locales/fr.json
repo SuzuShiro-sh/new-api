@@ -3675,6 +3675,20 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "请求与响应": "Requete et reponse",
+    "查看请求与响应": "Voir requete et reponse",
+    "请求与响应详情": "Details de la requete et de la reponse",
+    "请求输入": "Entree de la requete",
+    "请求参数": "Parametres de la requete",
+    "返回输出": "Sortie de la reponse",
+    "原始返回": "Reponse brute",
+    "错误内容": "Contenu de l'erreur",
+    "暂无记录内容": "Aucun contenu enregistre",
+    "该日志未记录请求或响应详情": "Aucun detail de requete ou de reponse n'a ete enregistre pour ce journal.",
+    "加载请求与响应详情失败": "Echec du chargement des details de requete et de reponse",
+    "已截断": "Tronque",
+    "内容已省略": "Contenu omis",
+    "省略原因": "Raison de l'omission"
   }
 }

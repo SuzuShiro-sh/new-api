@@ -321,6 +321,34 @@ export interface GetLogStatsResponse {
   data?: LogStatistics
 }
 
+export interface LogDetail {
+  id: number
+  request_id: string
+  user_id: number
+  created_at: number
+  updated_at: number
+  request_model: string
+  request_path: string
+  request_method: string
+  relay_format: string
+  is_stream: boolean
+  status_code: number
+  request_body: string
+  request_params: string
+  response_body: string
+  raw_response_body: string
+  error_body: string
+  content_truncated: boolean
+  content_omitted: boolean
+  omit_reason: string
+}
+
+export interface GetLogDetailResponse {
+  success: boolean
+  message?: string
+  data?: LogDetail
+}
+
 // ============================================================================
 // Drawing Log Types
 // ============================================================================
