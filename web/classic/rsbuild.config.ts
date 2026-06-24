@@ -6,9 +6,11 @@ import { pluginReact } from '@rsbuild/plugin-react'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const semiUiDir = path.resolve(
-  path.dirname(require.resolve('@douyinfe/semi-ui')),
-  '../..',
+const semiUiEntryPath = require.resolve('@douyinfe/semi-ui')
+const semiUiDir = path.resolve(path.dirname(semiUiEntryPath), '../..')
+const semiUiRequire = createRequire(semiUiEntryPath)
+const semiUiDateFnsDir = path.dirname(
+  semiUiRequire.resolve('date-fns'),
 )
 
 export default defineConfig(({ envMode }) => {
@@ -47,6 +49,7 @@ export default defineConfig(({ envMode }) => {
           semiUiDir,
           'dist/css/semi.css',
         ),
+        'date-fns': semiUiDateFnsDir,
       },
     },
     html: {
