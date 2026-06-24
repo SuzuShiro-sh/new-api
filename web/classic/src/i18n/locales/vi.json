@@ -4214,6 +4214,19 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "请求与响应": "Yêu cầu và phản hồi",
+    "查看请求与响应": "Xem yêu cầu và phản hồi",
+    "请求与响应详情": "Chi tiết yêu cầu và phản hồi",
+    "请求输入": "Nội dung yêu cầu",
+    "返回输出": "Nội dung phản hồi",
+    "原始返回": "Phản hồi gốc",
+    "错误内容": "Nội dung lỗi",
+    "暂无记录内容": "Không có nội dung được ghi",
+    "该日志未记录请求或响应详情": "Nhật ký này chưa ghi chi tiết yêu cầu hoặc phản hồi.",
+    "加载请求与响应详情失败": "Không tải được chi tiết yêu cầu và phản hồi",
+    "已截断": "Đã cắt ngắn",
+    "内容已省略": "Nội dung đã được lược bỏ",
+    "省略原因": "Lý do lược bỏ"
   }
 }

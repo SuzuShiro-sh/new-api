@@ -734,11 +734,34 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 		return total, nil
 	}
 
-	result := LOG_DB.WithContext(ctx).Where("created_at < ?", targetTimestamp).Limit(limit).Delete(&Log{})
-	if nil != result.Error {
-		return 0, result.Error
+	var logs []Log
+	if err := LOG_DB.WithContext(ctx).Select("id", "request_id").Where("created_at < ?", targetTimestamp).Order("id").Limit(limit).Find(&logs).Error; err != nil {
+		return 0, err
 	}
-	return result.RowsAffected, nil
+	if len(logs) == 0 {
+		return 0, nil
+	}
+
+	if err := LOG_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		requestIds := make([]string, 0, len(logs))
+		logIds := make([]int, 0, len(logs))
+		for _, log := range logs {
+			logIds = append(logIds, log.Id)
+			if log.RequestId != "" {
+				requestIds = append(requestIds, log.RequestId)
+			}
+		}
+		if len(requestIds) > 0 {
+			if err := tx.Where("request_id IN ?", requestIds).Delete(&LogDetail{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("id IN ?", logIds).Delete(&Log{}).Error
+	}); err != nil {
+		return 0, err
+	}
+
+	return int64(len(logs)), nil
 }
 
 func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64, error) {

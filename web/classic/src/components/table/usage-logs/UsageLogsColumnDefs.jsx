@@ -25,6 +25,7 @@ import {
   Tooltip,
   Popover,
   Typography,
+  Button,
 } from '@douyinfe/semi-ui';
 import {
   renderGroup,
@@ -55,6 +56,12 @@ const colors = [
   'violet',
   'yellow',
 ];
+
+const logDetailButtonStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
 
 function formatRatio(ratio) {
   if (ratio === undefined || ratio === null) {
@@ -480,6 +487,7 @@ export const getLogsColumns = ({
   copyText,
   showUserInfoFunc,
   openChannelAffinityUsageCacheModal,
+  openLogDetailModal,
   isAdminUser,
   billingDisplayMode = 'price',
 }) => {
@@ -905,6 +913,22 @@ export const getLogsColumns = ({
       fixed: 'right',
       width: 200,
       render: (text, record, index) => {
+        const canShowLogDetail =
+          record.request_id && (record.type === 2 || record.type === 5);
+        const logDetailButton = canShowLogDetail ? (
+          <Button
+            size='small'
+            theme='borderless'
+            type='primary'
+            style={{ ...logDetailButtonStyle, marginTop: 4 }}
+            onClick={(event) => {
+              event.stopPropagation();
+              openLogDetailModal?.(record);
+            }}
+          >
+            {t('查看请求与响应')}
+          </Button>
+        ) : null;
         const detailSummary = getUsageLogDetailSummary(
           record,
           text,
@@ -913,7 +937,9 @@ export const getLogsColumns = ({
         );
 
         if (!detailSummary) {
-          return (
+          return canShowLogDetail ? (
+            <div style={{ maxWidth: 200 }}>{logDetailButton}</div>
+          ) : (
             <Typography.Paragraph
               ellipsis={{
                 rows: 2,
@@ -929,7 +955,12 @@ export const getLogsColumns = ({
           );
         }
 
-        return renderCompactDetailSummary(detailSummary.segments);
+        return (
+          <div style={{ maxWidth: 200 }}>
+            {renderCompactDetailSummary(detailSummary.segments)}
+            {logDetailButton}
+          </div>
+        );
       },
     },
   ];

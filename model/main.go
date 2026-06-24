@@ -267,6 +267,9 @@ func migrateDB() error {
 	if err := migrateTokenModelLimitsToText(); err != nil {
 		return err
 	}
+	if err := migrateLogDetailLargeTextColumns(DB); err != nil {
+		return err
+	}
 
 	err := DB.AutoMigrate(
 		&Channel{},
@@ -277,6 +280,7 @@ func migrateDB() error {
 		&Redemption{},
 		&Ability{},
 		&Log{},
+		&LogDetail{},
 		&Midjourney{},
 		&TopUp{},
 		&QuotaData{},
@@ -331,6 +335,7 @@ func migrateDBFast() error {
 		{&Redemption{}, "Redemption"},
 		{&Ability{}, "Ability"},
 		{&Log{}, "Log"},
+		{&LogDetail{}, "LogDetail"},
 		{&Midjourney{}, "Midjourney"},
 		{&TopUp{}, "TopUp"},
 		{&QuotaData{}, "QuotaData"},
@@ -375,6 +380,9 @@ func migrateDBFast() error {
 			return err
 		}
 	}
+	if err := migrateLogDetailLargeTextColumns(DB); err != nil {
+		return err
+	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err
@@ -392,7 +400,14 @@ func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	var err error
+	if err = LOG_DB.AutoMigrate(&Log{}, &LogDetail{}); err != nil {
+		return err
+	}
+	if err = migrateLogDetailLargeTextColumns(LOG_DB); err != nil {
+		return err
+	}
+	return nil
 }
 
 func migrateClickHouseLogDB() error {
@@ -482,6 +497,41 @@ func clickHouseLogTableHasTTL() (bool, error) {
 func clickHouseCreateTableHasTTL(createTableSQL string) bool {
 	upperSQL := strings.ToUpper(createTableSQL)
 	return strings.Contains(upperSQL, "\nTTL ") || strings.Contains(upperSQL, " TTL ")
+}
+
+func migrateLogDetailLargeTextColumns(db *gorm.DB) error {
+	if db == nil || db.Dialector.Name() != "mysql" {
+		return nil
+	}
+	tableName := "log_details"
+	if !db.Migrator().HasTable(tableName) {
+		return nil
+	}
+	for _, columnName := range []string{
+		"request_body",
+		"request_params",
+		"response_body",
+		"raw_response_body",
+		"error_body",
+	} {
+		if !db.Migrator().HasColumn(&LogDetail{}, columnName) {
+			continue
+		}
+		var columnType string
+		if err := db.Raw(`SELECT COLUMN_TYPE FROM information_schema.columns
+				WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+			tableName, columnName).Scan(&columnType).Error; err != nil {
+			common.SysLog(fmt.Sprintf("Warning: failed to query metadata for %s.%s: %v", tableName, columnName, err))
+			continue
+		}
+		if strings.EqualFold(columnType, "mediumtext") || strings.EqualFold(columnType, "longtext") {
+			continue
+		}
+		if err := db.Exec(fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN %s MEDIUMTEXT", tableName, columnName)).Error; err != nil {
+			return fmt.Errorf("failed to migrate %s.%s to MEDIUMTEXT: %w", tableName, columnName, err)
+		}
+	}
+	return nil
 }
 
 type sqliteColumnDef struct {

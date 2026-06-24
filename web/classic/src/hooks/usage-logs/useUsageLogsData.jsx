@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Modal } from '@douyinfe/semi-ui';
+import { Button, Modal } from '@douyinfe/semi-ui';
 import {
   API,
   getTodayStartTimestamp,
@@ -42,6 +42,12 @@ import {
 import { ITEMS_PER_PAGE } from '../../constants';
 import { useTableCompactMode } from '../common/useTableCompactMode';
 import ParamOverrideEntry from '../../components/table/usage-logs/components/ParamOverrideEntry';
+
+const logDetailButtonStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
 
 export const useLogsData = () => {
   const { t } = useTranslation();
@@ -186,6 +192,10 @@ export const useLogsData = () => {
     useState(null);
   const [showParamOverrideModal, setShowParamOverrideModal] = useState(false);
   const [paramOverrideTarget, setParamOverrideTarget] = useState(null);
+  const [showLogDetailModal, setShowLogDetailModal] = useState(false);
+  const [logDetailTarget, setLogDetailTarget] = useState(null);
+  const [logDetail, setLogDetail] = useState(null);
+  const [loadingLogDetail, setLoadingLogDetail] = useState(false);
 
   // Initialize default column visibility
   const initDefaultColumns = () => {
@@ -364,6 +374,36 @@ export const useLogsData = () => {
     setShowParamOverrideModal(true);
   };
 
+  const openLogDetailModal = async (log) => {
+    const requestId = log?.request_id || '';
+    if (!requestId) {
+      return;
+    }
+    setLogDetailTarget({
+      requestId,
+      modelName: log?.model_name || '',
+    });
+    setLogDetail(null);
+    setShowLogDetailModal(true);
+    setLoadingLogDetail(true);
+    try {
+      const path = isAdminUser
+        ? `/api/log/detail/${encodeURIComponent(requestId)}`
+        : `/api/log/self/detail/${encodeURIComponent(requestId)}`;
+      const res = await API.get(path, { disableDuplicate: true });
+      const { success, message, data } = res.data || {};
+      if (success) {
+        setLogDetail(data || null);
+      } else {
+        showError(message || t('加载请求与响应详情失败'));
+      }
+    } catch (error) {
+      showError(error?.message || t('加载请求与响应详情失败'));
+    } finally {
+      setLoadingLogDetail(false);
+    }
+  };
+
   // Format logs data
   const setLogsFormat = (logs) => {
     const requestConversionDisplayValue = (conversionChain) => {
@@ -526,6 +566,28 @@ export const useLogsData = () => {
             ),
           });
         }
+      }
+      if (
+        logs[i].request_id &&
+        (logs[i].type === 2 || logs[i].type === 5)
+      ) {
+        expandDataLocal.push({
+          key: t('请求与响应'),
+          value: (
+            <Button
+              size='small'
+              theme='borderless'
+              type='primary'
+              style={logDetailButtonStyle}
+              onClick={(event) => {
+                event.stopPropagation();
+                openLogDetailModal(logs[i]);
+              }}
+            >
+              {t('查看请求与响应')}
+            </Button>
+          ),
+        });
       }
       if (other?.request_path) {
         expandDataLocal.push({
@@ -881,6 +943,11 @@ export const useLogsData = () => {
     showParamOverrideModal,
     setShowParamOverrideModal,
     paramOverrideTarget,
+    showLogDetailModal,
+    setShowLogDetailModal,
+    logDetailTarget,
+    logDetail,
+    loadingLogDetail,
 
     // Functions
     loadLogs,
@@ -893,6 +960,7 @@ export const useLogsData = () => {
     hasExpandableRows,
     setLogType,
     openParamOverrideModal,
+    openLogDetailModal,
 
     // Translation
     t,
