@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
@@ -63,6 +64,7 @@ import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { getLogDetail } from '../../api'
 import type { UsageLog } from '../../data/schema'
 import {
   parseLogOther,
@@ -81,7 +83,11 @@ import {
   isPerCallBilling,
   isTimingLogType,
 } from '../../lib/utils'
-import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import {
+  USAGE_BILLING_PATH,
+  type LogDetail,
+  type LogOtherData,
+} from '../../types'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -161,6 +167,179 @@ function DetailSection(props: {
         {props.children}
       </div>
     </div>
+  )
+}
+
+function formatDetailText(value: string): string {
+  if (!value) return ''
+  const trimmed = value.trim()
+  if (!trimmed) return value
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2)
+  } catch {
+    return value
+  }
+}
+
+function DetailTextBlock(props: {
+  label: string
+  value?: string
+  emptyText: string
+  copiedText: string | null
+  copyToClipboard: (text: string) => void
+  danger?: boolean
+}) {
+  const { t } = useTranslation()
+  const text = formatDetailText(props.value ?? '')
+  const hasText = text.trim().length > 0
+
+  return (
+    <div className='min-w-0 space-y-1.5'>
+      <div className='flex items-center justify-between gap-2'>
+        <Label
+          className={cn('text-xs font-medium', props.danger && 'text-red-500')}
+        >
+          {props.label}
+        </Label>
+        {hasText && (
+          <Button
+            variant='ghost'
+            size='sm'
+            className='h-6 w-6 p-0'
+            onClick={() => props.copyToClipboard(text)}
+            title={t('Copy to clipboard')}
+            aria-label={t('Copy to clipboard')}
+          >
+            {props.copiedText === text ? (
+              <Check className='size-3 text-green-600' />
+            ) : (
+              <Copy className='size-3' />
+            )}
+          </Button>
+        )}
+      </div>
+      <pre
+        className={cn(
+          'bg-background/70 max-h-64 min-h-16 overflow-auto rounded border p-2.5 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap',
+          !hasText && 'text-muted-foreground',
+          props.danger &&
+            'border-red-200 bg-red-50/70 text-red-950 dark:border-red-900 dark:bg-red-950/20 dark:text-red-100'
+        )}
+      >
+        {hasText ? text : props.emptyText}
+      </pre>
+    </div>
+  )
+}
+
+function RequestResponseDetailSection(props: {
+  detail?: LogDetail
+  isLoading: boolean
+  errorMessage?: string
+  copiedText: string | null
+  copyToClipboard: (text: string) => void
+}) {
+  const { t } = useTranslation()
+  const emptyText = t('No content recorded')
+  const detail = props.detail
+  const hasDetail =
+    !!detail &&
+    [
+      detail.request_body,
+      detail.request_params,
+      detail.response_body,
+      detail.raw_response_body,
+      detail.error_body,
+    ].some((value) => value && value.trim().length > 0)
+
+  let content: React.ReactNode
+  if (props.isLoading) {
+    content = (
+      <div className='text-muted-foreground flex items-center gap-2 text-xs'>
+        <span className='border-muted-foreground/40 size-3 animate-spin rounded-full border-2 border-t-transparent' />
+        {t('Loading request and response details...')}
+      </div>
+    )
+  } else if (props.errorMessage) {
+    content = (
+      <p className='text-muted-foreground text-xs'>{props.errorMessage}</p>
+    )
+  } else if (!detail || !hasDetail) {
+    content = (
+      <p className='text-muted-foreground text-xs'>
+        {t('No request or response detail was recorded for this log.')}
+      </p>
+    )
+  } else {
+    content = (
+      <div className='min-w-0 space-y-3'>
+        {(detail.content_truncated || detail.content_omitted) && (
+          <div className='flex flex-wrap items-center gap-1.5'>
+            {detail.content_truncated && (
+              <StatusBadge
+                label={t('Truncated')}
+                variant='orange'
+                size='sm'
+                copyable={false}
+              />
+            )}
+            {detail.content_omitted && (
+              <StatusBadge
+                label={t('Content omitted')}
+                variant='yellow'
+                size='sm'
+                copyable={false}
+              />
+            )}
+            {detail.omit_reason && (
+              <span className='text-muted-foreground text-xs break-words'>
+                {t('Omit Reason')}: {detail.omit_reason}
+              </span>
+            )}
+          </div>
+        )}
+        <DetailTextBlock
+          label={t('Request Input')}
+          value={detail.request_body}
+          emptyText={emptyText}
+          copiedText={props.copiedText}
+          copyToClipboard={props.copyToClipboard}
+        />
+        <DetailTextBlock
+          label={t('Request Parameters')}
+          value={detail.request_params}
+          emptyText={emptyText}
+          copiedText={props.copiedText}
+          copyToClipboard={props.copyToClipboard}
+        />
+        <DetailTextBlock
+          label={t('Response Output')}
+          value={detail.response_body}
+          emptyText={emptyText}
+          copiedText={props.copiedText}
+          copyToClipboard={props.copyToClipboard}
+        />
+        <DetailTextBlock
+          label={t('Raw Response')}
+          value={detail.raw_response_body}
+          emptyText={emptyText}
+          copiedText={props.copiedText}
+          copyToClipboard={props.copyToClipboard}
+        />
+        <DetailTextBlock
+          label={t('Error Content')}
+          value={detail.error_body}
+          emptyText={emptyText}
+          copiedText={props.copiedText}
+          copyToClipboard={props.copyToClipboard}
+          danger
+        />
+      </div>
+    )
+  }
+
+  return (
+    <DetailSection label={t('Request and Response')}>{content}</DetailSection>
   )
 }
 
@@ -480,6 +659,15 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const details = props.log.content ?? ''
+  const requestId = props.log.request_id ?? ''
+  const showRequestResponseDetail =
+    requestId.length > 0 && isRequestResponseDetailType(props.log.type)
+  const logDetailQuery = useQuery({
+    queryKey: ['log-detail', props.isAdmin, requestId],
+    queryFn: () => getLogDetail(requestId, props.isAdmin),
+    enabled: props.open && showRequestResponseDetail,
+    staleTime: 30_000,
+  })
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
 
@@ -600,6 +788,17 @@ export function DetailsDialog(props: DetailsDialogProps) {
     props.isAdmin &&
     props.log.type !== 6 &&
     (other?.request_path || conversionChain.length > 0)
+  const logDetail = logDetailQuery.data?.success
+    ? logDetailQuery.data.data
+    : undefined
+  let logDetailErrorMessage: string | undefined
+  if (logDetailQuery.isError) {
+    logDetailErrorMessage = t('Failed to load request and response details')
+  } else if (logDetailQuery.data && !logDetailQuery.data.success) {
+    logDetailErrorMessage =
+      logDetailQuery.data.message ||
+      t('No request or response detail was recorded for this log.')
+  }
 
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
@@ -630,7 +829,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentClassName={cn(
         'min-w-0 overflow-hidden',
         'max-sm:max-h-[calc(100dvh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
-        isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
+        isTieredBilling || showRequestResponseDetail
+          ? 'sm:max-w-4xl lg:max-w-5xl'
+          : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
@@ -813,6 +1014,16 @@ export function DetailsDialog(props: DetailsDialogProps) {
               mono
             />
           </DetailSection>
+        )}
+
+        {showRequestResponseDetail && (
+          <RequestResponseDetailSection
+            detail={logDetail}
+            isLoading={logDetailQuery.isLoading || logDetailQuery.isFetching}
+            errorMessage={logDetailErrorMessage}
+            copiedText={copiedText}
+            copyToClipboard={copyToClipboard}
+          />
         )}
 
         {/* Reject reason (admin only) */}
@@ -1260,4 +1471,8 @@ export function DetailsDialog(props: DetailsDialogProps) {
 
 function isDisplayableType(type: number): boolean {
   return [0, 2, 5, 6].includes(type)
+}
+
+function isRequestResponseDetailType(type: number): boolean {
+  return [2, 5].includes(type)
 }

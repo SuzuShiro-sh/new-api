@@ -20,6 +20,7 @@ import { api } from '@/lib/api'
 
 import { buildQueryParams } from './lib/utils'
 import type {
+  GetLogDetailResponse,
   GetLogsParams,
   GetLogsResponse,
   GetLogStatsParams,
@@ -83,6 +84,17 @@ export const getLogStats = (params: GetLogStatsParams = {}) =>
 export const getUserLogStats = (
   params: Omit<GetLogStatsParams, 'username' | 'channel'> = {}
 ) => fetchLogStats('/api/log', params, false)
+
+export async function getLogDetail(
+  requestId: string,
+  isAdmin: boolean
+): Promise<GetLogDetailResponse> {
+  const endpoint = isAdmin
+    ? `/api/log/detail/${encodeURIComponent(requestId)}`
+    : `/api/log/self/detail/${encodeURIComponent(requestId)}`
+  const res = await api.get(endpoint, { skipBusinessError: true })
+  return res.data
+}
 
 export async function getUserInfo(
   userId: number

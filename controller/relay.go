@@ -73,6 +73,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	var (
 		newAPIError *types.NewAPIError
+		relayInfo   *relaycommon.RelayInfo
 		ws          *websocket.Conn
 	)
 
@@ -90,6 +91,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			service.SetLogDetailError(c, nil, newAPIError.StatusCode, newAPIError.Error())
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -104,6 +106,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				})
 			}
 		}
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
+		service.CleanupLogDetailWithoutLog(c, relayInfo)
 	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
@@ -117,11 +121,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
-	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
+	relayInfo, err = relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	service.CaptureRelayRequestDetail(c, relayInfo)
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -493,8 +498,14 @@ func RelayTask(c *gin.Context) {
 		})
 		return
 	}
+	service.CaptureRelayRequestDetail(c, relayInfo)
+	defer func() {
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
+		service.CleanupLogDetailWithoutLog(c, relayInfo)
+	}()
 
 	if taskErr := relay.ResolveOriginTask(c, relayInfo); taskErr != nil {
+		service.SetLogDetailError(c, relayInfo, taskErr.StatusCode, taskErr.Message)
 		respondTaskError(c, taskErr)
 		return
 	}
@@ -601,6 +612,7 @@ func RelayTask(c *gin.Context) {
 	}
 
 	if taskErr != nil {
+		service.SetLogDetailError(c, relayInfo, taskErr.StatusCode, taskErr.Message)
 		respondTaskError(c, taskErr)
 	}
 }

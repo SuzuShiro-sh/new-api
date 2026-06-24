@@ -1,13 +1,16 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func GetAllLogs(c *gin.Context) {
@@ -53,6 +56,40 @@ func GetUserLogs(c *gin.Context) {
 	pageInfo.SetItems(logs)
 	common.ApiSuccess(c, pageInfo)
 	return
+}
+
+func GetLogDetail(c *gin.Context) {
+	requestId := c.Param("request_id")
+	detail, err := service.GetLogDetail(c, requestId, true)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "日志详情不存在",
+			})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, detail)
+}
+
+func GetUserLogDetail(c *gin.Context) {
+	requestId := c.Param("request_id")
+	detail, err := service.GetLogDetail(c, requestId, false)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "日志详情不存在或无权查看",
+			})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, detail)
 }
 
 // Deprecated: SearchAllLogs 已废弃，前端未使用该接口。
