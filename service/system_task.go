@@ -112,17 +112,27 @@ type LogCleanupResult struct {
 	DeletedCount int64 `json:"deleted_count"`
 }
 
+// LogDetailCleanupMode 区分按保留期清理与全部清空两种任务行为.
+type LogDetailCleanupMode string
+
+const (
+	LogDetailCleanupModeExpired LogDetailCleanupMode = "expired"
+	LogDetailCleanupModeAll     LogDetailCleanupMode = "all"
+)
+
 // LogDetailCleanupPayload 描述详情清理范围与可选物理空间回收设置.
 type LogDetailCleanupPayload struct {
-	TargetTimestamp int64 `json:"target_timestamp"`
-	BatchSize       int   `json:"batch_size"`
-	ReclaimSpace    bool  `json:"reclaim_space"`
+	Mode            LogDetailCleanupMode `json:"mode,omitempty"`
+	TargetTimestamp int64                `json:"target_timestamp"`
+	BatchSize       int                  `json:"batch_size"`
+	ReclaimSpace    bool                 `json:"reclaim_space"`
 }
 
 // LogDetailCleanupResult 汇总详情清理任务的实际结果.
 type LogDetailCleanupResult struct {
-	DeletedCount   int64 `json:"deleted_count"`
-	SpaceReclaimed bool  `json:"space_reclaimed"`
+	Mode           LogDetailCleanupMode `json:"mode"`
+	DeletedCount   int64                `json:"deleted_count"`
+	SpaceReclaimed bool                 `json:"space_reclaimed"`
 }
 
 var (
@@ -222,7 +232,24 @@ func StartLogDetailCleanupTask(targetTimestamp int64, reclaimSpace bool) (*model
 	if targetTimestamp <= 0 {
 		return nil, errors.New("target timestamp is required")
 	}
+	return startLogDetailCleanupTask(LogDetailCleanupPayload{
+		Mode:            LogDetailCleanupModeExpired,
+		TargetTimestamp: targetTimestamp,
+		BatchSize:       logDetailCleanupBatchSize,
+		ReclaimSpace:    reclaimSpace,
+	})
+}
 
+// StartLogDetailClearAllTask 创建清空全部详情并立即释放表空间的任务.
+func StartLogDetailClearAllTask() (*model.SystemTask, error) {
+	return startLogDetailCleanupTask(LogDetailCleanupPayload{
+		Mode:         LogDetailCleanupModeAll,
+		ReclaimSpace: true,
+	})
+}
+
+// startLogDetailCleanupTask 复用同一任务类型, 保证两种详情维护操作互斥执行.
+func startLogDetailCleanupTask(payload LogDetailCleanupPayload) (*model.SystemTask, error) {
 	activeTask, err := model.GetActiveSystemTask(model.SystemTaskTypeLogDetailCleanup)
 	if err != nil {
 		return nil, err
@@ -231,11 +258,6 @@ func StartLogDetailCleanupTask(targetTimestamp int64, reclaimSpace bool) (*model
 		return activeTask, nil
 	}
 
-	payload := LogDetailCleanupPayload{
-		TargetTimestamp: targetTimestamp,
-		BatchSize:       logDetailCleanupBatchSize,
-		ReclaimSpace:    reclaimSpace,
-	}
 	state := LogCleanupState{}
 	task, err := model.CreateSystemTask(model.SystemTaskTypeLogDetailCleanup, payload, state)
 	if err != nil {
@@ -485,6 +507,57 @@ func runLogDetailCleanupTask(ctx context.Context, task *model.SystemTask, runner
 		failSystemTask(task, runnerID, err)
 		return
 	}
+	if payload.Mode == "" {
+		payload.Mode = LogDetailCleanupModeExpired
+	}
+	if payload.Mode != LogDetailCleanupModeExpired && payload.Mode != LogDetailCleanupModeAll {
+		failSystemTask(task, runnerID, fmt.Errorf("unsupported log detail cleanup mode: %s", payload.Mode))
+		return
+	}
+
+	state := LogCleanupState{}
+	if err := task.DecodeState(&state); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	if payload.Mode == LogDetailCleanupModeAll {
+		remaining, err := model.CountLogDetails(ctx)
+		if err != nil {
+			failSystemTask(task, runnerID, err)
+			return
+		}
+		if state.Total < remaining {
+			state.Total = remaining
+		}
+		state.Remaining = remaining
+		state.Progress = logCleanupProgress(state.Processed, state.Total)
+		if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+			logSystemTaskLockError(ctx, task, err)
+			return
+		}
+
+		if err := model.ClearAllLogDetailsAndReclaim(ctx); err != nil {
+			failSystemTask(task, runnerID, err)
+			return
+		}
+		state.Processed = state.Total
+		state.Remaining = 0
+		state.Progress = 100
+		if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+			logSystemTaskLockError(ctx, task, err)
+			return
+		}
+		result := LogDetailCleanupResult{
+			Mode:           LogDetailCleanupModeAll,
+			DeletedCount:   state.Processed,
+			SpaceReclaimed: true,
+		}
+		if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
+			logSystemTaskLockError(ctx, task, err)
+		}
+		return
+	}
+
 	if payload.TargetTimestamp <= 0 {
 		failSystemTask(task, runnerID, errors.New("target timestamp is required"))
 		return
@@ -493,11 +566,6 @@ func runLogDetailCleanupTask(ctx context.Context, task *model.SystemTask, runner
 		payload.BatchSize = logDetailCleanupBatchSize
 	}
 
-	state := LogCleanupState{}
-	if err := task.DecodeState(&state); err != nil {
-		failSystemTask(task, runnerID, err)
-		return
-	}
 	remaining, err := model.CountExpiredLogDetails(ctx, payload.TargetTimestamp)
 	if err != nil {
 		failSystemTask(task, runnerID, err)
@@ -558,6 +626,7 @@ func runLogDetailCleanupTask(ctx context.Context, task *model.SystemTask, runner
 		return
 	}
 	result := LogDetailCleanupResult{
+		Mode:           LogDetailCleanupModeExpired,
 		DeletedCount:   state.Processed,
 		SpaceReclaimed: spaceReclaimed,
 	}

@@ -259,6 +259,18 @@ func CountExpiredLogDetails(ctx context.Context, targetTimestamp int64) (int64, 
 	return total, nil
 }
 
+// CountLogDetails 统计当前保存的全部请求/响应详情记录.
+func CountLogDetails(ctx context.Context) (int64, error) {
+	if LOG_DB == nil || common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return 0, nil
+	}
+	var total int64
+	if err := LOG_DB.WithContext(ctx).Model(&LogDetail{}).Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 // DeleteExpiredLogDetailsBatch 分批删除指定时间之前的详情记录.
 func DeleteExpiredLogDetailsBatch(ctx context.Context, targetTimestamp int64, limit int) (int64, error) {
 	if LOG_DB == nil || common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
@@ -287,6 +299,41 @@ func DeleteExpiredLogDetailsBatch(ctx context.Context, targetTimestamp int64, li
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+// ClearAllLogDetailsAndReclaim 清空全部详情并按数据库类型立即释放表空间.
+func ClearAllLogDetailsAndReclaim(ctx context.Context) error {
+	if LOG_DB == nil || common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !LOG_DB.Migrator().HasTable(&LogDetail{}) {
+		return nil
+	}
+
+	db := LOG_DB.WithContext(ctx)
+	switch common.LogDatabaseType() {
+	case common.DatabaseTypeSQLite:
+		if err := db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LogDetail{}).Error; err != nil {
+			return fmt.Errorf("failed to clear SQLite log detail table: %w", err)
+		}
+		if err := ReclaimLogDetailStorage(ctx); err != nil {
+			return fmt.Errorf("failed to reclaim SQLite log detail storage: %w", err)
+		}
+	case common.DatabaseTypeMySQL:
+		if err := db.Exec("TRUNCATE TABLE `log_details`").Error; err != nil {
+			return fmt.Errorf("failed to truncate MySQL log detail table: %w", err)
+		}
+	case common.DatabaseTypePostgreSQL:
+		if err := db.Exec(`TRUNCATE TABLE "log_details"`).Error; err != nil {
+			return fmt.Errorf("failed to truncate PostgreSQL log detail table: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported log database type: %s", common.LogDatabaseType())
+	}
+	return nil
 }
 
 // ReclaimLogDetailStorage 显式整理详情表并把可回收空间归还给操作系统.

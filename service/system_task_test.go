@@ -268,6 +268,7 @@ func TestRunLogDetailCleanupTaskPreservesUsageLogs(t *testing.T) {
 	assert.Equal(t, model.SystemTaskStatusSucceeded, finished.Status)
 	var result LogDetailCleanupResult
 	require.NoError(t, common.UnmarshalJsonStr(finished.Result, &result))
+	assert.Equal(t, LogDetailCleanupModeExpired, result.Mode)
 	assert.Equal(t, int64(1), result.DeletedCount)
 	assert.False(t, result.SpaceReclaimed)
 
@@ -280,6 +281,55 @@ func TestRunLogDetailCleanupTaskPreservesUsageLogs(t *testing.T) {
 	var logCount int64
 	require.NoError(t, model.LOG_DB.Model(&model.Log{}).
 		Where("request_id IN ?", []string{"req_detail_old", "req_detail_new"}).
+		Count(&logCount).Error)
+	assert.Equal(t, int64(2), logCount)
+}
+
+func TestRunLogDetailClearAllTaskPreservesUsageLogs(t *testing.T) {
+	truncate(t)
+	require.NoError(t, model.DB.Create([]*model.Log{
+		{UserId: 1, CreatedAt: 10, Type: model.LogTypeConsume, RequestId: "req_detail_first"},
+		{UserId: 1, CreatedAt: 30, Type: model.LogTypeConsume, RequestId: "req_detail_second"},
+	}).Error)
+	require.NoError(t, model.LOG_DB.Create([]*model.LogDetail{
+		{RequestId: "req_detail_first", UserId: 1, CreatedAt: 10, RequestBody: "first"},
+		{RequestId: "req_detail_second", UserId: 1, CreatedAt: 30, RequestBody: "second"},
+	}).Error)
+
+	task, err := model.CreateSystemTask(
+		model.SystemTaskTypeLogDetailCleanup,
+		LogDetailCleanupPayload{Mode: LogDetailCleanupModeAll, ReclaimSpace: true},
+		LogCleanupState{},
+	)
+	require.NoError(t, err)
+	const runnerID = "runner-log-detail-clear-all"
+	claimedTask, claimed, err := model.ClaimSystemTask(
+		task.ID,
+		task.Type,
+		runnerID,
+		common.GetTimestamp()+60,
+	)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	runLogDetailCleanupTask(context.Background(), claimedTask, runnerID)
+
+	finished, err := model.GetSystemTaskByTaskID(task.TaskID)
+	require.NoError(t, err)
+	require.NotNil(t, finished)
+	assert.Equal(t, model.SystemTaskStatusSucceeded, finished.Status)
+	var result LogDetailCleanupResult
+	require.NoError(t, common.UnmarshalJsonStr(finished.Result, &result))
+	assert.Equal(t, LogDetailCleanupModeAll, result.Mode)
+	assert.Equal(t, int64(2), result.DeletedCount)
+	assert.True(t, result.SpaceReclaimed)
+
+	detailCount, err := model.CountLogDetails(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, detailCount)
+	var logCount int64
+	require.NoError(t, model.LOG_DB.Model(&model.Log{}).
+		Where("request_id IN ?", []string{"req_detail_first", "req_detail_second"}).
 		Count(&logCount).Error)
 	assert.Equal(t, int64(2), logCount)
 }

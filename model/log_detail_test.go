@@ -112,14 +112,14 @@ func TestDeleteExpiredLogDetailsBatchOnlyDeletesExpiredRows(t *testing.T) {
 	assert.Equal(t, int64(1), recentCount)
 }
 
-func TestReclaimLogDetailStorageShrinksSQLiteFile(t *testing.T) {
+func TestClearAllLogDetailsAndReclaimShrinksSQLiteFileAndPreservesLogs(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "log-detail-reclaim.db")
 	testDB, err := gorm.Open(sqlite.Open(databasePath+"?_busy_timeout=30000"), &gorm.Config{})
 	require.NoError(t, err)
 	sqlDB, err := testDB.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, testDB.AutoMigrate(&LogDetail{}))
+	require.NoError(t, testDB.AutoMigrate(&Log{}, &LogDetail{}))
 
 	previousLogDB := LOG_DB
 	previousLogDatabaseType := common.LogDatabaseType()
@@ -141,12 +141,29 @@ func TestReclaimLogDetailStorageShrinksSQLiteFile(t *testing.T) {
 		}
 	}
 	require.NoError(t, testDB.Session(&gorm.Session{SkipHooks: true}).CreateInBatches(details, 8).Error)
-	require.NoError(t, testDB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LogDetail{}).Error)
+	require.NoError(t, testDB.Create(&Log{
+		UserId:    1,
+		CreatedAt: 1,
+		Type:      LogTypeConsume,
+		RequestId: "req_reclaim_000",
+	}).Error)
 
 	beforeReclaim, err := os.Stat(databasePath)
 	require.NoError(t, err)
 	require.Greater(t, beforeReclaim.Size(), int64(4<<20))
-	require.NoError(t, ReclaimLogDetailStorage(context.Background()))
+
+	total, err := CountLogDetails(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(details)), total)
+	require.NoError(t, ClearAllLogDetailsAndReclaim(context.Background()))
+
+	remaining, err := CountLogDetails(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, remaining)
+	var logCount int64
+	require.NoError(t, testDB.Model(&Log{}).Count(&logCount).Error)
+	assert.Equal(t, int64(1), logCount)
+
 	afterReclaim, err := os.Stat(databasePath)
 	require.NoError(t, err)
 	assert.Less(t, afterReclaim.Size(), beforeReclaim.Size()/2)

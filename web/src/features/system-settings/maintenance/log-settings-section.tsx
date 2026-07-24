@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -37,6 +38,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Form,
   FormControl,
@@ -68,6 +70,7 @@ import {
   getCurrentLogCleanupTask,
   getLogDetailCleanupTask,
   getSystemTask,
+  startLogDetailClearAllTask,
   startLogDetailCleanupTask,
   startLogCleanupTask,
 } from '../api'
@@ -181,6 +184,10 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     useState(false)
   const [reclaimLogDetailSpace, setReclaimLogDetailSpace] = useState(false)
   const [showLogDetailCleanupDialog, setShowLogDetailCleanupDialog] =
+    useState(false)
+  const [showLogDetailClearAllDialog, setShowLogDetailClearAllDialog] =
+    useState(false)
+  const [confirmLogDetailClearAll, setConfirmLogDetailClearAll] =
     useState(false)
   const [showConfirmDialog, setShowConfirmDialog] = useState(false)
   const [serverLogInfo, setServerLogInfo] = useState<ServerLogInfo | null>(null)
@@ -314,11 +321,23 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
           if (res.data.status === 'succeeded') {
             const count =
               res.data.result?.deleted_count ?? res.data.state?.processed ?? 0
-            toast.success(
-              count > 0
-                ? t('{{count}} request details removed.', { count })
-                : t('No expired request details found.')
-            )
+            const mode =
+              res.data.result?.mode ?? res.data.payload?.mode ?? 'expired'
+            if (mode === 'all') {
+              toast.success(
+                count > 0
+                  ? t('{{count}} request details permanently deleted.', {
+                      count,
+                    })
+                  : t('All request details cleared.')
+              )
+            } else {
+              toast.success(
+                count > 0
+                  ? t('{{count}} request details removed.', { count })
+                  : t('No expired request details found.')
+              )
+            }
             if (res.data.result?.space_reclaimed) {
               toast.success(t('Request detail storage reclaimed.'))
             }
@@ -417,6 +436,35 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
         error instanceof Error
           ? error.message
           : t('Failed to clean request details')
+      toast.error(message)
+    } finally {
+      setIsStartingLogDetailCleanup(false)
+    }
+  }
+
+  const handleRequestClearAllLogDetails = () => {
+    setConfirmLogDetailClearAll(false)
+    setShowLogDetailClearAllDialog(true)
+  }
+
+  const handleClearAllLogDetails = async () => {
+    if (!confirmLogDetailClearAll) return
+
+    setIsStartingLogDetailCleanup(true)
+    try {
+      const res = await startLogDetailClearAllTask()
+      if (!res.success || !res.data) {
+        throw new Error(res.message || t('Failed to clear all request details'))
+      }
+      setLogDetailCleanupTask(res.data)
+      setShowLogDetailClearAllDialog(false)
+      setConfirmLogDetailClearAll(false)
+      toast.success(t('All request details cleanup task started.'))
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : t('Failed to clear all request details')
       toast.error(message)
     } finally {
       setIsStartingLogDetailCleanup(false)
@@ -639,6 +687,31 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                   {isStartingLogDetailCleanup || logDetailCleanupActive
                     ? t('Cleaning...')
                     : t('Clean details')}
+                </Button>
+              </div>
+
+              <div className='flex flex-wrap items-center justify-between gap-3 border-t pt-3'>
+                <div className='min-w-0'>
+                  <div className='text-destructive text-sm font-medium'>
+                    {t('Clear all request details')}
+                  </div>
+                  <div className='text-muted-foreground text-xs'>
+                    {t(
+                      'Immediately remove every stored request and response detail and release its table storage. Usage and billing logs are kept.'
+                    )}
+                  </div>
+                </div>
+                <Button
+                  type='button'
+                  variant='destructive'
+                  className='shrink-0'
+                  onClick={handleRequestClearAllLogDetails}
+                  disabled={
+                    isStartingLogDetailCleanup || logDetailCleanupActive
+                  }
+                >
+                  <Trash2 className='size-4' aria-hidden='true' />
+                  {t('Clear all details')}
                 </Button>
               </div>
 
@@ -947,6 +1020,58 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
               {isStartingLogDetailCleanup
                 ? t('Cleaning...')
                 : t('Clean details')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={showLogDetailClearAllDialog}
+        onOpenChange={(open) => {
+          setShowLogDetailClearAllDialog(open)
+          if (!open) setConfirmLogDetailClearAll(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('Clear all request details?')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'This permanently deletes every stored request and response detail and reclaims the detail table storage. Usage and billing logs will be kept.'
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className='flex items-start gap-3 rounded-md border p-3'>
+            <Checkbox
+              id='confirm-clear-all-request-details'
+              checked={confirmLogDetailClearAll}
+              onCheckedChange={setConfirmLogDetailClearAll}
+              disabled={isStartingLogDetailCleanup}
+            />
+            <Label
+              htmlFor='confirm-clear-all-request-details'
+              className='cursor-pointer text-sm leading-5'
+            >
+              {t(
+                'I understand that all stored request and response details will be permanently deleted.'
+              )}
+            </Label>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isStartingLogDetailCleanup}>
+              {t('Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant='destructive'
+              onClick={handleClearAllLogDetails}
+              disabled={!confirmLogDetailClearAll || isStartingLogDetailCleanup}
+            >
+              <Trash2 className='size-4' aria-hidden='true' />
+              {isStartingLogDetailCleanup
+                ? t('Cleaning...')
+                : t('Clear all details')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -88,6 +88,13 @@ export async function startLogDetailCleanupTask(
   return res.data
 }
 
+export async function startLogDetailClearAllTask() {
+  const res = await api.post<SystemTaskResponse<LogDetailCleanupTask>>(
+    '/api/system-task/log-detail-clear-all'
+  )
+  return res.data
+}
+
 export async function getCurrentLogDetailCleanupTask() {
   const res = await api.get<SystemTaskResponse<LogDetailCleanupTask | null>>(
     '/api/system-task/current',

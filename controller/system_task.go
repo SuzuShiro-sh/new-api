@@ -57,6 +57,20 @@ func CreateLogDetailCleanupSystemTask(c *gin.Context) {
 	})
 }
 
+// CreateLogDetailClearAllSystemTask 创建清空全部请求/响应详情并回收空间的任务.
+func CreateLogDetailClearAllSystemTask(c *gin.Context) {
+	task, err := service.StartLogDetailClearAllTask()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    task.ToResponse(),
+	})
+}
+
 func GetCurrentSystemTask(c *gin.Context) {
 	taskType := c.Query("type")
 	if taskType == "" {

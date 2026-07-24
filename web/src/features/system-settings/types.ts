@@ -94,13 +94,17 @@ export type LogCleanupTask = SystemTask<
   LogCleanupTaskResult
 >
 
+export type LogDetailCleanupMode = 'expired' | 'all'
+
 export type LogDetailCleanupTaskPayload = {
+  mode?: LogDetailCleanupMode
   target_timestamp: number
   batch_size: number
   reclaim_space: boolean
 }
 
 export type LogDetailCleanupTaskResult = {
+  mode?: LogDetailCleanupMode
   deleted_count: number
   space_reclaimed: boolean
 }
