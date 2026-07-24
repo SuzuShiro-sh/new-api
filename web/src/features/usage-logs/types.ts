@@ -357,6 +357,7 @@ export interface LogDetail {
   relay_format: string
   is_stream: boolean
   status_code: number
+  stored_bytes: number
   request_body: string
   request_params: string
   response_body: string

@@ -94,6 +94,23 @@ export type LogCleanupTask = SystemTask<
   LogCleanupTaskResult
 >
 
+export type LogDetailCleanupTaskPayload = {
+  target_timestamp: number
+  batch_size: number
+  reclaim_space: boolean
+}
+
+export type LogDetailCleanupTaskResult = {
+  deleted_count: number
+  space_reclaimed: boolean
+}
+
+export type LogDetailCleanupTask = SystemTask<
+  LogDetailCleanupTaskPayload,
+  LogCleanupTaskState,
+  LogDetailCleanupTaskResult
+>
+
 export type SystemTaskResponse<TTask = SystemTask | null> = {
   success: boolean
   message: string
@@ -347,6 +364,9 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  LogDetailEnabled: boolean
+  LogDetailRetentionDays: number
+  LogDetailMaxBodyKB: number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number

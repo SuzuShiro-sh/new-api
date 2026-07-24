@@ -83,8 +83,17 @@ func (logCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runner
 	runLogCleanupTask(ctx, task, runnerID)
 }
 
+type logDetailCleanupHandler struct{}
+
+func (logDetailCleanupHandler) Type() string { return model.SystemTaskTypeLogDetailCleanup }
+
+func (logDetailCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	runLogDetailCleanupTask(ctx, task, runnerID)
+}
+
 func init() {
 	RegisterSystemTaskHandler(logCleanupHandler{})
+	RegisterSystemTaskHandler(logDetailCleanupHandler{})
 }
 
 type LogCleanupPayload struct {
@@ -101,6 +110,19 @@ type LogCleanupState struct {
 
 type LogCleanupResult struct {
 	DeletedCount int64 `json:"deleted_count"`
+}
+
+// LogDetailCleanupPayload 描述详情清理范围与可选物理空间回收设置.
+type LogDetailCleanupPayload struct {
+	TargetTimestamp int64 `json:"target_timestamp"`
+	BatchSize       int   `json:"batch_size"`
+	ReclaimSpace    bool  `json:"reclaim_space"`
+}
+
+// LogDetailCleanupResult 汇总详情清理任务的实际结果.
+type LogDetailCleanupResult struct {
+	DeletedCount   int64 `json:"deleted_count"`
+	SpaceReclaimed bool  `json:"space_reclaimed"`
 }
 
 var (
@@ -186,6 +208,38 @@ func StartLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
 	task, err := model.CreateSystemTask(model.SystemTaskTypeLogCleanup, payload, state)
 	if err != nil {
 		activeTask, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeLogCleanup)
+		if activeErr == nil && activeTask != nil {
+			return activeTask, nil
+		}
+		return nil, err
+	}
+	notifySystemTaskRunner()
+	return task, nil
+}
+
+// StartLogDetailCleanupTask 创建详情清理任务, 可选择在删除后整理物理空间.
+func StartLogDetailCleanupTask(targetTimestamp int64, reclaimSpace bool) (*model.SystemTask, error) {
+	if targetTimestamp <= 0 {
+		return nil, errors.New("target timestamp is required")
+	}
+
+	activeTask, err := model.GetActiveSystemTask(model.SystemTaskTypeLogDetailCleanup)
+	if err != nil {
+		return nil, err
+	}
+	if activeTask != nil {
+		return activeTask, nil
+	}
+
+	payload := LogDetailCleanupPayload{
+		TargetTimestamp: targetTimestamp,
+		BatchSize:       logDetailCleanupBatchSize,
+		ReclaimSpace:    reclaimSpace,
+	}
+	state := LogCleanupState{}
+	task, err := model.CreateSystemTask(model.SystemTaskTypeLogDetailCleanup, payload, state)
+	if err != nil {
+		activeTask, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeLogDetailCleanup)
 		if activeErr == nil && activeTask != nil {
 			return activeTask, nil
 		}
@@ -420,6 +474,93 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 	}
 
 	result := LogCleanupResult{DeletedCount: state.Processed}
+	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+	}
+}
+
+func runLogDetailCleanupTask(ctx context.Context, task *model.SystemTask, runnerID string) {
+	payload := LogDetailCleanupPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	if payload.TargetTimestamp <= 0 {
+		failSystemTask(task, runnerID, errors.New("target timestamp is required"))
+		return
+	}
+	if payload.BatchSize <= 0 {
+		payload.BatchSize = logDetailCleanupBatchSize
+	}
+
+	state := LogCleanupState{}
+	if err := task.DecodeState(&state); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	remaining, err := model.CountExpiredLogDetails(ctx, payload.TargetTimestamp)
+	if err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	syncLogCleanupStateFromRemaining(&state, remaining)
+	if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+		return
+	}
+
+	for state.Remaining > 0 {
+		rowsAffected, err := model.DeleteExpiredLogDetailsBatch(ctx, payload.TargetTimestamp, payload.BatchSize)
+		if err != nil {
+			failSystemTask(task, runnerID, err)
+			return
+		}
+		if rowsAffected == 0 {
+			remaining, err = model.CountExpiredLogDetails(ctx, payload.TargetTimestamp)
+			if err != nil {
+				failSystemTask(task, runnerID, err)
+				return
+			}
+			if remaining > 0 {
+				failSystemTask(task, runnerID, errors.New("no log detail rows were deleted"))
+				return
+			}
+			state.Remaining = 0
+			break
+		}
+
+		state.Processed += rowsAffected
+		if state.Remaining > rowsAffected {
+			state.Remaining -= rowsAffected
+		} else {
+			state.Remaining = 0
+		}
+		state.Progress = logCleanupProgress(state.Processed, state.Total)
+		if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+			logSystemTaskLockError(ctx, task, err)
+			return
+		}
+	}
+
+	spaceReclaimed := false
+	if payload.ReclaimSpace {
+		if err := model.ReclaimLogDetailStorage(ctx); err != nil {
+			failSystemTask(task, runnerID, err)
+			return
+		}
+		spaceReclaimed = true
+	}
+
+	state.Progress = 100
+	state.Remaining = 0
+	if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+		return
+	}
+	result := LogDetailCleanupResult{
+		DeletedCount:   state.Processed,
+		SpaceReclaimed: spaceReclaimed,
+	}
 	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
 		logSystemTaskLockError(ctx, task, err)
 	}

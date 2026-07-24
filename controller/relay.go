@@ -91,7 +91,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-			service.SetLogDetailError(c, nil, newAPIError.StatusCode, newAPIError.Error())
+			service.SetLogDetailError(c, newAPIError.StatusCode, newAPIError.Error())
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -107,7 +107,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 		}
 		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
-		service.CleanupLogDetailWithoutLog(c, relayInfo)
 	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
@@ -501,11 +500,10 @@ func RelayTask(c *gin.Context) {
 	service.CaptureRelayRequestDetail(c, relayInfo)
 	defer func() {
 		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
-		service.CleanupLogDetailWithoutLog(c, relayInfo)
 	}()
 
 	if taskErr := relay.ResolveOriginTask(c, relayInfo); taskErr != nil {
-		service.SetLogDetailError(c, relayInfo, taskErr.StatusCode, taskErr.Message)
+		service.SetLogDetailError(c, taskErr.StatusCode, taskErr.Message)
 		respondTaskError(c, taskErr)
 		return
 	}
@@ -612,7 +610,7 @@ func RelayTask(c *gin.Context) {
 	}
 
 	if taskErr != nil {
-		service.SetLogDetailError(c, relayInfo, taskErr.StatusCode, taskErr.Message)
+		service.SetLogDetailError(c, taskErr.StatusCode, taskErr.Message)
 		respondTaskError(c, taskErr)
 	}
 }

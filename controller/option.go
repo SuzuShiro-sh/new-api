@@ -153,6 +153,26 @@ func UpdateOption(c *gin.Context) {
 		}
 	}
 	switch option.Key {
+	case "LogDetailRetentionDays":
+		value, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || value < 0 || value > common.MaxLogDetailRetentionDays {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("日志详情保留天数必须在 0 到 %d 之间", common.MaxLogDetailRetentionDays),
+			})
+			return
+		}
+	case "LogDetailMaxBodyKB":
+		value, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || value < common.MinLogDetailBodyKB || value > common.MaxLogDetailBodyKB {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("日志详情单段上限必须在 %d KiB 到 %d KiB 之间", common.MinLogDetailBodyKB, common.MaxLogDetailBodyKB),
+			})
+			return
+		}
+	}
+	switch option.Key {
 	case "GitHubOAuthEnabled":
 		if option.Value == "true" && common.GitHubClientId == "" {
 			c.JSON(http.StatusOK, gin.H{

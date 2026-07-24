@@ -14,7 +14,23 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 )
+
+func TestDeduplicateRawResponseRemovesOnlyIdenticalBody(t *testing.T) {
+	raw := logDetailText{Text: `{"id":"same"}`, Original: 128, Truncated: true}
+	client := logDetailText{Text: `{"id":"same"}`}
+
+	deduplicated, matched := deduplicateRawResponse(raw, client)
+	assert.True(t, matched)
+	assert.Empty(t, deduplicated.Text)
+	assert.Equal(t, 128, deduplicated.Original)
+	assert.True(t, deduplicated.Truncated)
+
+	different, matched := deduplicateRawResponse(raw, logDetailText{Text: `{"id":"different"}`})
+	assert.False(t, matched)
+	assert.Equal(t, raw, different)
+}
 
 func TestReplaceMediaDataOmitsLongMediaAndBase64(t *testing.T) {
 	media := `"data:image/png;base64,` + strings.Repeat("a", 256) + `"`
@@ -30,7 +46,7 @@ func TestReplaceMediaDataOmitsLongMediaAndBase64(t *testing.T) {
 }
 
 func TestSanitizeTextBodyOmitsTruncatedMediaDataURL(t *testing.T) {
-	mediaURL := `"data:image/jpeg;base64,/9j/` + strings.Repeat("A", logDetailTextLimitBytes)
+	mediaURL := `"data:image/jpeg;base64,/9j/` + strings.Repeat("A", defaultLogDetailTextLimitBytes)
 	body := `{"messages":[{"content":[{"type":"image_url","image_url":{"url":` + mediaURL
 
 	got := sanitizeTextBody(body, "application/json")
@@ -73,13 +89,13 @@ func TestReplaceMediaDataOmitsLongBase64URLText(t *testing.T) {
 }
 
 func TestSanitizeTextBodyTruncatesAtLimit(t *testing.T) {
-	got := sanitizeTextBody(strings.Repeat("a", logDetailTextLimitBytes+1), "application/json")
+	got := sanitizeTextBody(strings.Repeat("a", defaultLogDetailTextLimitBytes+1), "application/json")
 
 	if !got.Truncated {
 		t.Fatal("expected long text body to be marked truncated")
 	}
-	if len(got.Text) != logDetailTextLimitBytes {
-		t.Fatalf("expected saved text length %d, got %d", logDetailTextLimitBytes, len(got.Text))
+	if len(got.Text) != defaultLogDetailTextLimitBytes {
+		t.Fatalf("expected saved text length %d, got %d", defaultLogDetailTextLimitBytes, len(got.Text))
 	}
 }
 
@@ -283,9 +299,12 @@ func TestBuildLogDetailMetaUsesRelayChannelMetaWhenPresent(t *testing.T) {
 
 func TestCaptureRelayRequestDetailSkipsWhenConsumeLogDisabled(t *testing.T) {
 	oldLogConsumeEnabled := common.LogConsumeEnabled
+	oldLogDetailEnabled := common.LogDetailEnabled
 	common.LogConsumeEnabled = false
+	common.LogDetailEnabled = true
 	defer func() {
 		common.LogConsumeEnabled = oldLogConsumeEnabled
+		common.LogDetailEnabled = oldLogDetailEnabled
 	}()
 
 	recorder := httptest.NewRecorder()
@@ -312,13 +331,40 @@ func TestCaptureRelayRequestDetailSkipsWhenConsumeLogDisabled(t *testing.T) {
 		t.Fatal("expected response writer not to be wrapped when consume logs are disabled")
 	}
 
-	wrapped := WrapLogDetailResponse(c, resp, info)
+	wrapped := WrapLogDetailResponse(c, resp)
 	if _, ok := wrapped.Body.(*responseBodyCapture); ok {
 		t.Fatal("expected upstream response body not to be wrapped without active log detail capture")
 	}
 	if wrapped.Body != originalBody {
 		t.Fatal("expected upstream response body to remain unchanged without active log detail capture")
 	}
+}
+
+func TestCaptureRelayRequestDetailSkipsWhenDetailCaptureDisabled(t *testing.T) {
+	oldLogConsumeEnabled := common.LogConsumeEnabled
+	oldLogDetailEnabled := common.LogDetailEnabled
+	common.LogConsumeEnabled = true
+	common.LogDetailEnabled = false
+	t.Cleanup(func() {
+		common.LogConsumeEnabled = oldLogConsumeEnabled
+		common.LogDetailEnabled = oldLogDetailEnabled
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt"}`))
+	c.Set(common.RequestIdKey, "req_detail_disabled")
+
+	CaptureRelayRequestDetail(c, &relaycommon.RelayInfo{
+		RequestId:   "req_detail_disabled",
+		UserId:      1,
+		RelayFormat: types.RelayFormatOpenAI,
+	})
+
+	_, captured := c.Get(logDetailContextKey)
+	assert.False(t, captured)
+	_, wrapped := c.Writer.(*LogDetailResponseWriter)
+	assert.False(t, wrapped)
 }
 
 func TestExtractRequestDetailTextUsesParsedMultipartForm(t *testing.T) {

@@ -521,7 +521,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	_ = req.Body.Close()
 	_ = c.Request.Body.Close()
-	resp = service.WrapLogDetailResponse(c, resp, info)
+	resp = service.WrapLogDetailResponse(c, resp)
 	return resp, nil
 }
 

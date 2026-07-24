@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
@@ -42,6 +42,7 @@ import {
   FormControl,
   FormDescription,
   FormField,
+  FormItem,
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
@@ -63,8 +64,11 @@ import dayjs from '@/lib/dayjs'
 import { formatTimestampToDate } from '@/lib/format'
 
 import {
+  getCurrentLogDetailCleanupTask,
   getCurrentLogCleanupTask,
+  getLogDetailCleanupTask,
   getSystemTask,
+  startLogDetailCleanupTask,
   startLogCleanupTask,
 } from '../api'
 import {
@@ -76,16 +80,19 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
-import type { LogCleanupTask } from '../types'
+import type { LogCleanupTask, LogDetailCleanupTask } from '../types'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
+  LogDetailEnabled: z.boolean(),
+  LogDetailRetentionDays: z.number().int().min(0).max(3650),
+  LogDetailMaxBodyKB: z.number().int().min(16).max(5120),
 })
 
 type LogSettingsFormValues = z.infer<typeof logSettingsSchema>
 
 type LogSettingsSectionProps = {
-  defaultEnabled: boolean
+  defaultValues: LogSettingsFormValues
 }
 
 type ServerLogInfo = {
@@ -139,16 +146,26 @@ function isActiveLogCleanupTask(task: LogCleanupTask | null) {
   return task?.status === 'pending' || task?.status === 'running'
 }
 
-export function LogSettingsSection({
-  defaultEnabled,
-}: LogSettingsSectionProps) {
+export function LogSettingsSection(props: LogSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const defaultValues = useMemo<LogSettingsFormValues>(
+    () => ({
+      LogConsumeEnabled: props.defaultValues.LogConsumeEnabled,
+      LogDetailEnabled: props.defaultValues.LogDetailEnabled,
+      LogDetailRetentionDays: props.defaultValues.LogDetailRetentionDays,
+      LogDetailMaxBodyKB: props.defaultValues.LogDetailMaxBodyKB,
+    }),
+    [
+      props.defaultValues.LogConsumeEnabled,
+      props.defaultValues.LogDetailEnabled,
+      props.defaultValues.LogDetailMaxBodyKB,
+      props.defaultValues.LogDetailRetentionDays,
+    ]
+  )
   const form = useForm<LogSettingsFormValues>({
     resolver: zodResolver(logSettingsSchema),
-    defaultValues: {
-      LogConsumeEnabled: defaultEnabled,
-    },
+    defaultValues,
   })
 
   const [purgeDate, setPurgeDate] = useState<Date | undefined>(() =>
@@ -158,6 +175,13 @@ export function LogSettingsSection({
   const [logCleanupTask, setLogCleanupTask] = useState<LogCleanupTask | null>(
     null
   )
+  const [logDetailCleanupTask, setLogDetailCleanupTask] =
+    useState<LogDetailCleanupTask | null>(null)
+  const [isStartingLogDetailCleanup, setIsStartingLogDetailCleanup] =
+    useState(false)
+  const [reclaimLogDetailSpace, setReclaimLogDetailSpace] = useState(false)
+  const [showLogDetailCleanupDialog, setShowLogDetailCleanupDialog] =
+    useState(false)
   const [showConfirmDialog, setShowConfirmDialog] = useState(false)
   const [serverLogInfo, setServerLogInfo] = useState<ServerLogInfo | null>(null)
   const [serverLogCleanupMode, setServerLogCleanupMode] = useState('by_count')
@@ -174,8 +198,8 @@ export function LogSettingsSection({
   }, [])
 
   useEffect(() => {
-    form.reset({ LogConsumeEnabled: defaultEnabled })
-  }, [defaultEnabled, form])
+    form.reset(defaultValues)
+  }, [defaultValues, form])
 
   useEffect(() => {
     fetchServerLogInfo()
@@ -184,18 +208,25 @@ export function LogSettingsSection({
   useEffect(() => {
     let cancelled = false
 
-    async function fetchCurrentLogCleanupTask() {
+    async function fetchCurrentCleanupTasks() {
       try {
-        const res = await getCurrentLogCleanupTask()
-        if (!cancelled && res.success && res.data) {
-          setLogCleanupTask(res.data)
+        const [logResponse, detailResponse] = await Promise.all([
+          getCurrentLogCleanupTask(),
+          getCurrentLogDetailCleanupTask(),
+        ])
+        if (cancelled) return
+        if (logResponse.success && logResponse.data) {
+          setLogCleanupTask(logResponse.data)
+        }
+        if (detailResponse.success && detailResponse.data) {
+          setLogDetailCleanupTask(detailResponse.data)
         }
       } catch {
         /* ignore */
       }
     }
 
-    fetchCurrentLogCleanupTask()
+    fetchCurrentCleanupTasks()
 
     return () => {
       cancelled = true
@@ -221,6 +252,19 @@ export function LogSettingsSection({
   const logCleanupProcessed = logCleanupState?.processed ?? 0
   const logCleanupTotal = logCleanupState?.total ?? 0
   const logCleanupTaskId = logCleanupTask?.task_id
+  const logDetailCleanupActive = isActiveLogCleanupTask(logDetailCleanupTask)
+  const logDetailCleanupState = logDetailCleanupTask?.state
+  const logDetailCleanupProgress = Math.min(
+    100,
+    Math.max(0, logDetailCleanupState?.progress ?? 0)
+  )
+  const logDetailCleanupProcessed = logDetailCleanupState?.processed ?? 0
+  const logDetailCleanupTotal = logDetailCleanupState?.total ?? 0
+  const logDetailCleanupTaskId = logDetailCleanupTask?.task_id
+  const detailRetentionDays = useWatch({
+    control: form.control,
+    name: 'LogDetailRetentionDays',
+  })
 
   useEffect(() => {
     if (!logCleanupTaskId || !logCleanupActive) return
@@ -256,12 +300,51 @@ export function LogSettingsSection({
     }
   }, [logCleanupActive, logCleanupTaskId, t])
 
+  useEffect(() => {
+    if (!logDetailCleanupTaskId || !logDetailCleanupActive) return
+
+    let cancelled = false
+    const interval = window.setInterval(async () => {
+      try {
+        const res = await getLogDetailCleanupTask(logDetailCleanupTaskId)
+        if (cancelled || !res.success || !res.data) return
+
+        setLogDetailCleanupTask(res.data)
+        if (!isActiveLogCleanupTask(res.data)) {
+          if (res.data.status === 'succeeded') {
+            const count =
+              res.data.result?.deleted_count ?? res.data.state?.processed ?? 0
+            toast.success(
+              count > 0
+                ? t('{{count}} request details removed.', { count })
+                : t('No expired request details found.')
+            )
+            if (res.data.result?.space_reclaimed) {
+              toast.success(t('Request detail storage reclaimed.'))
+            }
+          } else if (res.data.status === 'failed') {
+            toast.error(res.data.error || t('Failed to clean request details'))
+          }
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 1000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [logDetailCleanupActive, logDetailCleanupTaskId, t])
+
   const onSubmit = async (values: LogSettingsFormValues) => {
-    if (values.LogConsumeEnabled === defaultEnabled) return
-    await updateOption.mutateAsync({
-      key: 'LogConsumeEnabled',
-      value: values.LogConsumeEnabled,
-    })
+    const updates = Object.entries(values).filter(
+      ([key, value]) =>
+        value !== defaultValues[key as keyof LogSettingsFormValues]
+    )
+    for (const [key, value] of updates) {
+      await updateOption.mutateAsync({ key, value })
+    }
   }
 
   const handleRequestCleanLogs = () => {
@@ -297,6 +380,46 @@ export function LogSettingsSection({
       toast.error(message)
     } finally {
       setIsStartingLogCleanup(false)
+    }
+  }
+
+  const handleRequestCleanLogDetails = () => {
+    if (!Number.isInteger(detailRetentionDays) || detailRetentionDays <= 0) {
+      toast.error(t('Set a positive detail retention period first.'))
+      return
+    }
+    setShowLogDetailCleanupDialog(true)
+  }
+
+  const handleCleanLogDetails = async () => {
+    if (!Number.isInteger(detailRetentionDays) || detailRetentionDays <= 0) {
+      toast.error(t('Set a positive detail retention period first.'))
+      return
+    }
+
+    const targetTimestamp = Math.floor(
+      (Date.now() - detailRetentionDays * HOURS_IN_DAY * 60 * 60 * 1000) / 1000
+    )
+    setIsStartingLogDetailCleanup(true)
+    try {
+      const res = await startLogDetailCleanupTask(
+        targetTimestamp,
+        reclaimLogDetailSpace
+      )
+      if (!res.success || !res.data) {
+        throw new Error(res.message || t('Failed to clean request details'))
+      }
+      setLogDetailCleanupTask(res.data)
+      setShowLogDetailCleanupDialog(false)
+      toast.success(t('Request detail cleanup task started.'))
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : t('Failed to clean request details')
+      toast.error(message)
+    } finally {
+      setIsStartingLogDetailCleanup(false)
     }
   }
 
@@ -366,6 +489,186 @@ export function LogSettingsSection({
               </SettingsSwitchItem>
             )}
           />
+
+          <FormField
+            control={form.control}
+            name='LogDetailEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>
+                    {t('Record request and response details')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Store request and response bodies for recent usage logs. This content can be sensitive and increases database usage.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <FormMessage />
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <SettingsControlGroup className='space-y-4'>
+            <div>
+              <h4 className='text-sm font-medium'>
+                {t('Request detail storage')}
+              </h4>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'Remove expired request and response content without deleting usage or billing logs.'
+                )}
+              </p>
+            </div>
+
+            <div className='grid min-w-0 gap-4 md:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='LogDetailRetentionDays'
+                render={({ field }) => (
+                  <FormItem className='min-w-0'>
+                    <FormLabel>{t('Detail retention (days)')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={0}
+                        max={3650}
+                        step={1}
+                        {...field}
+                        onChange={(event) =>
+                          field.onChange(Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Details older than this are removed hourly without deleting usage logs. Set 0 to disable automatic expiration.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='LogDetailMaxBodyKB'
+                render={({ field }) => (
+                  <FormItem className='min-w-0'>
+                    <FormLabel>
+                      {t('Maximum content per section (KiB)')}
+                    </FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={16}
+                        max={5120}
+                        step={16}
+                        {...field}
+                        onChange={(event) =>
+                          field.onChange(Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Request, response, raw response, and error content are truncated independently at this limit.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className='flex min-w-0 flex-col gap-3 border-t pt-3'>
+              <div className='flex min-w-0 items-start justify-between gap-4'>
+                <div className='min-w-0 space-y-0.5'>
+                  <Label
+                    htmlFor='reclaim-log-detail-space'
+                    className='text-sm font-medium'
+                  >
+                    {t('Reclaim database space')}
+                  </Label>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Database compaction may temporarily lock log storage and requires additional free disk space.'
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  id='reclaim-log-detail-space'
+                  checked={reclaimLogDetailSpace}
+                  onCheckedChange={setReclaimLogDetailSpace}
+                  disabled={
+                    isStartingLogDetailCleanup || logDetailCleanupActive
+                  }
+                />
+              </div>
+
+              <div className='flex flex-wrap items-center justify-between gap-3'>
+                <div className='min-w-0'>
+                  <div className='text-sm font-medium'>
+                    {t('Clean expired request details')}
+                  </div>
+                  <div className='text-muted-foreground text-xs'>
+                    {detailRetentionDays > 0
+                      ? t('Delete details older than {{count}} days.', {
+                          count: detailRetentionDays,
+                        })
+                      : t('Set a positive detail retention period first.')}
+                  </div>
+                </div>
+                <Button
+                  type='button'
+                  variant='destructive'
+                  onClick={handleRequestCleanLogDetails}
+                  disabled={
+                    detailRetentionDays <= 0 ||
+                    isStartingLogDetailCleanup ||
+                    logDetailCleanupActive
+                  }
+                >
+                  {isStartingLogDetailCleanup || logDetailCleanupActive
+                    ? t('Cleaning...')
+                    : t('Clean details')}
+                </Button>
+              </div>
+
+              {logDetailCleanupTask && (
+                <div className='rounded-md border p-3'>
+                  <div className='mb-2 flex items-center justify-between gap-3 text-sm'>
+                    <span className='font-medium'>
+                      {t('Request detail cleanup progress')}
+                    </span>
+                    <span className='text-muted-foreground tabular-nums'>
+                      {logDetailCleanupProgress}%
+                    </span>
+                  </div>
+                  <Progress value={logDetailCleanupProgress} />
+                  <div className='text-muted-foreground mt-2 text-xs'>
+                    {t('{{processed}} of {{total}} details processed.', {
+                      processed: logDetailCleanupProcessed,
+                      total: logDetailCleanupTotal,
+                    })}
+                  </div>
+                  {logDetailCleanupTask.status === 'failed' &&
+                    logDetailCleanupTask.error && (
+                      <div className='text-destructive mt-2 text-xs'>
+                        {logDetailCleanupTask.error}
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
+          </SettingsControlGroup>
 
           <SettingsControlGroup className='space-y-3'>
             <div>
@@ -607,6 +910,43 @@ export function LogSettingsSection({
               disabled={isStartingLogCleanup}
             >
               {isStartingLogCleanup ? t('Cleaning...') : t('Delete logs')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={showLogDetailCleanupDialog}
+        onOpenChange={setShowLogDetailCleanupDialog}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('Confirm request detail cleanup')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'This will permanently remove request and response details older than {{days}} days. Usage and billing logs will be kept.',
+                { days: detailRetentionDays }
+              )}{' '}
+              {reclaimLogDetailSpace &&
+                t(
+                  'The database will also be compacted to return reusable space to the operating system.'
+                )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isStartingLogDetailCleanup}>
+              {t('Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant='destructive'
+              onClick={handleCleanLogDetails}
+              disabled={isStartingLogDetailCleanup}
+            >
+              {isStartingLogDetailCleanup
+                ? t('Cleaning...')
+                : t('Clean details')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

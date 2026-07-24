@@ -22,6 +22,7 @@ import type {
   ConfirmPaymentComplianceResponse,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
+  LogDetailCleanupTask,
   SystemOptionsResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
@@ -66,6 +67,40 @@ export async function getCurrentLogCleanupTask() {
     {
       params: { type: 'log_cleanup' },
     }
+  )
+  return res.data
+}
+
+export async function startLogDetailCleanupTask(
+  targetTimestamp: number,
+  reclaimSpace: boolean
+) {
+  const res = await api.post<SystemTaskResponse<LogDetailCleanupTask>>(
+    '/api/system-task/log-detail-cleanup',
+    null,
+    {
+      params: {
+        target_timestamp: targetTimestamp,
+        reclaim_space: reclaimSpace,
+      },
+    }
+  )
+  return res.data
+}
+
+export async function getCurrentLogDetailCleanupTask() {
+  const res = await api.get<SystemTaskResponse<LogDetailCleanupTask | null>>(
+    '/api/system-task/current',
+    {
+      params: { type: 'log_detail_cleanup' },
+    }
+  )
+  return res.data
+}
+
+export async function getLogDetailCleanupTask(taskId: string) {
+  const res = await api.get<SystemTaskResponse<LogDetailCleanupTask>>(
+    `/api/system-task/${taskId}`
   )
   return res.data
 }

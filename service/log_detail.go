@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -20,22 +21,27 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const (
-	logDetailTextLimitBytes      = 5 << 20
-	logDetailContextKey          = "new_api_log_detail_capture"
-	logDetailRawCaptureMarkerKey = "new_api_log_detail_raw_capture"
+	defaultLogDetailTextLimitBytes = common.MaxLogDetailBodyKB * 1024
+	logDetailContextKey            = "new_api_log_detail_capture"
+	logDetailRawCaptureMarkerKey   = "new_api_log_detail_raw_capture"
 )
 
 var longBase64Pattern = regexp.MustCompile(`(?i)"data:(image|audio|video|application)(?:/|\\/)[^"]{128,}"?|"[A-Za-z0-9+/_=\\-]{1000,}"?`)
 
 type logDetailCapture struct {
-	requestId    string
-	responseBody *limitedTextBuffer
-	mu           sync.Mutex
+	requestId           string
+	createdAt           int64
+	requestBody         logDetailText
+	responseBody        *limitedTextBuffer
+	rawResponseBody     logDetailText
+	errorBody           logDetailText
+	responseContentType string
+	statusCode          int
+	finalized           bool
+	mu                  sync.Mutex
 }
 
 type limitedTextBuffer struct {
@@ -48,7 +54,15 @@ type limitedTextBuffer struct {
 }
 
 func newLimitedTextBuffer() *limitedTextBuffer {
-	return &limitedTextBuffer{limit: logDetailTextLimitBytes}
+	return &limitedTextBuffer{limit: currentLogDetailTextLimitBytes()}
+}
+
+func currentLogDetailTextLimitBytes() int {
+	limit := common.LogDetailMaxBodyKB * 1024
+	if limit < common.MinLogDetailBodyKB*1024 || limit > defaultLogDetailTextLimitBytes {
+		return defaultLogDetailTextLimitBytes
+	}
+	return limit
 }
 
 func (b *limitedTextBuffer) writeBytes(data []byte) {
@@ -136,6 +150,7 @@ type logDetailMeta struct {
 	RawBodyTruncated        bool     `json:"raw_body_truncated,omitempty"`
 	RawBodyOmitted          bool     `json:"raw_body_omitted,omitempty"`
 	RawBodyOmitReason       string   `json:"raw_body_omit_reason,omitempty"`
+	RawBodyDeduplicated     bool     `json:"raw_body_deduplicated,omitempty"`
 	ErrorBodyBytes          int      `json:"error_body_bytes,omitempty"`
 	ErrorBodySavedBytes     int      `json:"error_body_saved_bytes,omitempty"`
 	ErrorBodyTruncated      bool     `json:"error_body_truncated,omitempty"`
@@ -144,7 +159,7 @@ type logDetailMeta struct {
 
 type responseBodyCapture struct {
 	io.ReadCloser
-	requestId   string
+	capture     *logDetailCapture
 	contentType string
 	buf         *limitedTextBuffer
 	once        sync.Once
@@ -152,16 +167,18 @@ type responseBodyCapture struct {
 
 type LogDetailResponseWriter struct {
 	gin.ResponseWriter
-	requestId string
-	buf       *limitedTextBuffer
-	mu        *sync.Mutex
+	buf *limitedTextBuffer
+	mu  *sync.Mutex
 }
 
 func CaptureRelayRequestDetail(c *gin.Context, info *relaycommon.RelayInfo) {
 	if c == nil || info == nil {
 		return
 	}
-	if !common.LogConsumeEnabled {
+	if !common.LogConsumeEnabled || !common.LogDetailEnabled {
+		return
+	}
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return
 	}
 	requestId := requestIdFromContext(c, info)
@@ -170,68 +187,39 @@ func CaptureRelayRequestDetail(c *gin.Context, info *relaycommon.RelayInfo) {
 	}
 	capture := &logDetailCapture{
 		requestId:    requestId,
+		createdAt:    common.GetTimestamp(),
 		responseBody: newLimitedTextBuffer(),
 	}
 	c.Set(logDetailContextKey, capture)
 	wrappedWriter := &LogDetailResponseWriter{
 		ResponseWriter: c.Writer,
-		requestId:      requestId,
 		buf:            capture.responseBody,
 		mu:             &capture.mu,
 	}
 	c.Writer = wrappedWriter
 
 	requestText := extractRequestDetailText(c)
-	meta := buildLogDetailMeta(c, info, 0)
-	applyTextMeta(&meta, "request", requestText)
-	metaJSON := marshalLogDetailMeta(meta)
-
-	now := common.GetTimestamp()
-	detail := model.LogDetail{
-		RequestId:        requestId,
-		UserId:           info.UserId,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		RequestModel:     info.OriginModelName,
-		RequestPath:      requestPath(c),
-		RequestMethod:    requestMethod(c),
-		RelayFormat:      string(info.RelayFormat),
-		IsStream:         info.IsStream,
-		RequestBody:      model.LogDetailLargeText(requestText.Text),
-		RequestParams:    model.LogDetailLargeText(metaJSON),
-		ContentTruncated: requestText.Truncated,
-		ContentOmitted:   requestText.Omitted,
-		OmitReason:       truncatePlainText(requestText.Reason, 255),
-	}
+	capture.mu.Lock()
+	capture.requestBody = requestText
 	if info.RelayFormat == types.RelayFormatOpenAIRealtime {
-		detail.ContentOmitted = true
-		detail.OmitReason = "websocket realtime frames are not captured"
+		capture.requestBody.Omitted = true
+		capture.requestBody.Reason = "websocket realtime frames are not captured"
 	}
-	upsertLogDetail(c, detail, []string{
-		"user_id", "updated_at", "request_model", "request_path", "request_method",
-		"relay_format", "is_stream", "request_body", "request_params",
-		"content_truncated", "content_omitted", "omit_reason",
-	})
+	capture.mu.Unlock()
 }
 
-func WrapLogDetailResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) *http.Response {
+func WrapLogDetailResponse(c *gin.Context, resp *http.Response) *http.Response {
 	if c == nil || resp == nil || resp.Body == nil {
 		return resp
 	}
-	if !isLogDetailCaptureActive(c) {
-		return resp
-	}
-	requestId := c.GetString(common.RequestIdKey)
-	if requestId == "" && info != nil {
-		requestId = info.RequestId
-	}
-	if requestId == "" {
+	detailCapture := getLogDetailCapture(c)
+	if detailCapture == nil {
 		return resp
 	}
 	contentType := resp.Header.Get("Content-Type")
 	capture := &responseBodyCapture{
 		ReadCloser:  resp.Body,
-		requestId:   requestId,
+		capture:     detailCapture,
 		contentType: contentType,
 		buf:         newLimitedTextBuffer(),
 	}
@@ -240,7 +228,10 @@ func WrapLogDetailResponse(c *gin.Context, resp *http.Response, info *relaycommo
 		capture.buf.omit("binary response content-type " + contentType)
 	}
 	resp.Body = capture
-	UpdateLogDetailMeta(c, info, resp.StatusCode, contentType)
+	detailCapture.mu.Lock()
+	detailCapture.statusCode = resp.StatusCode
+	detailCapture.responseContentType = contentType
+	detailCapture.mu.Unlock()
 	return resp
 }
 
@@ -248,11 +239,8 @@ func CaptureLogDetailBytesResponse(c *gin.Context, src *http.Response, data []by
 	if c == nil || len(data) == 0 {
 		return
 	}
-	if !isLogDetailCaptureActive(c) {
-		return
-	}
-	requestId := c.GetString(common.RequestIdKey)
-	if requestId == "" {
+	detailCapture := getLogDetailCapture(c)
+	if detailCapture == nil {
 		return
 	}
 	contentType := ""
@@ -269,24 +257,13 @@ func CaptureLogDetailBytesResponse(c *gin.Context, src *http.Response, data []by
 		text.Omitted = true
 		text.Reason = "binary response content-type " + contentType
 	}
-	displayText := displayResponseDetailText(text, contentType, isEventStreamContentType(contentType))
-	meta := buildLogDetailMeta(c, nil, statusCode)
-	meta.ResponseContentType = contentType
-	applyTextMeta(&meta, "raw", text)
-	applyTextMeta(&meta, "response", displayText)
-	fields := map[string]interface{}{
-		"status_code":       statusCode,
-		"response_body":     displayText.Text,
-		"request_params":    marshalLogDetailMeta(meta),
-		"content_truncated": gorm.Expr("content_truncated OR ?", text.Truncated || displayText.Truncated),
-		"content_omitted":   gorm.Expr("content_omitted OR ?", text.Omitted || displayText.Omitted),
-		"omit_reason":       mergedOmitReasonExpr(firstNonEmpty(text.Reason, displayText.Reason)),
-		"updated_at":        common.GetTimestamp(),
-	}
+	detailCapture.mu.Lock()
+	detailCapture.statusCode = statusCode
+	detailCapture.responseContentType = contentType
 	if !hasUpstreamRawCapture(c, src) {
-		fields["raw_response_body"] = text.Text
+		detailCapture.rawResponseBody = text
 	}
-	updateLogDetailFields(requestId, fields)
+	detailCapture.mu.Unlock()
 }
 
 func hasUpstreamRawCapture(c *gin.Context, src *http.Response) bool {
@@ -301,16 +278,19 @@ func hasUpstreamRawCapture(c *gin.Context, src *http.Response) bool {
 	return false
 }
 
-func isLogDetailCaptureActive(c *gin.Context) bool {
+func getLogDetailCapture(c *gin.Context) *logDetailCapture {
 	if c == nil {
-		return false
+		return nil
 	}
 	capture, ok := c.Get(logDetailContextKey)
 	if !ok {
-		return false
+		return nil
 	}
 	ldc, ok := capture.(*logDetailCapture)
-	return ok && ldc != nil
+	if !ok {
+		return nil
+	}
+	return ldc
 }
 
 func (r *responseBodyCapture) Read(p []byte) (int, error) {
@@ -332,13 +312,13 @@ func (r *responseBodyCapture) Close() error {
 func (r *responseBodyCapture) flush() {
 	r.once.Do(func() {
 		text := sanitizeCapturedText(r.buf.value(), r.contentType)
-		updateLogDetailFields(r.requestId, map[string]interface{}{
-			"raw_response_body": text.Text,
-			"content_truncated": gorm.Expr("content_truncated OR ?", text.Truncated),
-			"content_omitted":   gorm.Expr("content_omitted OR ?", text.Omitted),
-			"omit_reason":       mergedOmitReasonExpr(text.Reason),
-			"updated_at":        common.GetTimestamp(),
-		})
+		if r.capture == nil {
+			return
+		}
+		r.capture.mu.Lock()
+		r.capture.rawResponseBody = text
+		r.capture.responseContentType = r.contentType
+		r.capture.mu.Unlock()
 	})
 }
 
@@ -346,9 +326,11 @@ func (w *LogDetailResponseWriter) Write(data []byte) (int, error) {
 	if w != nil && w.buf != nil {
 		if w.mu != nil {
 			w.mu.Lock()
-			defer w.mu.Unlock()
 		}
 		w.buf.writeBytes(data)
+		if w.mu != nil {
+			w.mu.Unlock()
+		}
 	}
 	return w.ResponseWriter.Write(data)
 }
@@ -357,9 +339,11 @@ func (w *LogDetailResponseWriter) WriteString(data string) (int, error) {
 	if w != nil && w.buf != nil {
 		if w.mu != nil {
 			w.mu.Lock()
-			defer w.mu.Unlock()
 		}
 		w.buf.writeString(data)
+		if w.mu != nil {
+			w.mu.Unlock()
+		}
 	}
 	return w.ResponseWriter.WriteString(data)
 }
@@ -397,99 +381,110 @@ func (w *LogDetailResponseWriter) CloseNotify() <-chan bool {
 }
 
 func FlushCapturedLogDetailResponse(c *gin.Context, info *relaycommon.RelayInfo, statusCode int) {
-	if c == nil {
+	ldc := getLogDetailCapture(c)
+	if ldc == nil || info == nil {
 		return
 	}
-	capture, ok := c.Get(logDetailContextKey)
-	if !ok {
-		return
-	}
-	ldc, ok := capture.(*logDetailCapture)
-	if !ok || ldc == nil {
-		return
-	}
+
 	ldc.mu.Lock()
-	responseContentType := c.Writer.Header().Get("Content-Type")
-	text := sanitizeCapturedText(ldc.responseBody.value(), responseContentType)
+	if ldc.finalized {
+		ldc.mu.Unlock()
+		return
+	}
+	ldc.finalized = true
+	responseContentType := ldc.responseContentType
+	if responseContentType == "" && c.Writer != nil {
+		responseContentType = c.Writer.Header().Get("Content-Type")
+	}
+	requestText := ldc.requestBody
+	responseText := sanitizeCapturedText(ldc.responseBody.value(), responseContentType)
+	rawResponseText := ldc.rawResponseBody
+	errorText := ldc.errorBody
+	capturedStatusCode := ldc.statusCode
 	ldc.mu.Unlock()
+
+	if statusCode == 0 {
+		statusCode = capturedStatusCode
+	}
 	if statusCode == 0 && c.Writer != nil {
 		statusCode = c.Writer.Status()
 	}
 	meta := buildLogDetailMeta(c, info, statusCode)
 	meta.ResponseContentType = responseContentType
-	displayText := displayResponseDetailText(text, responseContentType, meta.IsStream)
+	displayText := displayResponseDetailText(responseText, responseContentType, meta.IsStream)
+	rawResponseText, meta.RawBodyDeduplicated = deduplicateRawResponse(rawResponseText, displayText)
+	applyTextMeta(&meta, "request", requestText)
 	applyTextMeta(&meta, "response", displayText)
+	applyTextMeta(&meta, "raw", rawResponseText)
+	applyTextMeta(&meta, "error", errorText)
 	metaJSON := marshalLogDetailMeta(meta)
-	updateLogDetailFields(ldc.requestId, map[string]interface{}{
-		"status_code":       statusCode,
-		"is_stream":         meta.IsStream,
-		"response_body":     displayText.Text,
-		"request_params":    metaJSON,
-		"content_truncated": gorm.Expr("content_truncated OR ?", text.Truncated || displayText.Truncated),
-		"content_omitted":   gorm.Expr("content_omitted OR ?", text.Omitted || displayText.Omitted),
-		"omit_reason":       mergedOmitReasonExpr(firstNonEmpty(text.Reason, displayText.Reason)),
-		"updated_at":        common.GetTimestamp(),
-	})
+
+	now := common.GetTimestamp()
+	createdAt := ldc.createdAt
+	if createdAt == 0 {
+		createdAt = now
+	}
+	detail := &model.LogDetail{
+		RequestId:        ldc.requestId,
+		UserId:           info.UserId,
+		CreatedAt:        createdAt,
+		UpdatedAt:        now,
+		RequestModel:     info.OriginModelName,
+		RequestPath:      requestPath(c),
+		RequestMethod:    requestMethod(c),
+		RelayFormat:      string(info.RelayFormat),
+		IsStream:         meta.IsStream,
+		StatusCode:       statusCode,
+		RequestBody:      model.LogDetailLargeText(requestText.Text),
+		RequestParams:    model.LogDetailLargeText(metaJSON),
+		ResponseBody:     model.LogDetailLargeText(displayText.Text),
+		RawResponseBody:  model.LogDetailLargeText(rawResponseText.Text),
+		ErrorBody:        model.LogDetailLargeText(errorText.Text),
+		ContentTruncated: requestText.Truncated || responseText.Truncated || displayText.Truncated || rawResponseText.Truncated || errorText.Truncated,
+		ContentOmitted:   requestText.Omitted || responseText.Omitted || displayText.Omitted || rawResponseText.Omitted || errorText.Omitted,
+		OmitReason: truncatePlainText(firstNonEmpty(
+			requestText.Reason,
+			responseText.Reason,
+			displayText.Reason,
+			rawResponseText.Reason,
+			errorText.Reason,
+		), 255),
+	}
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if _, err := model.SaveLogDetailIfLogExists(ctx, detail); err != nil {
+		logger.LogError(c, "failed to save log detail: "+err.Error())
+	}
 }
 
-func CleanupLogDetailWithoutLog(c *gin.Context, info *relaycommon.RelayInfo) {
-	if !isLogDetailCaptureActive(c) {
-		return
+// deduplicateRawResponse 避免重复保存与客户端响应完全相同的上游正文.
+func deduplicateRawResponse(rawResponse logDetailText, storedResponse logDetailText) (logDetailText, bool) {
+	if rawResponse.Text == "" || rawResponse.Text != storedResponse.Text {
+		return rawResponse, false
 	}
-	requestId := requestIdFromContext(c, info)
-	if requestId == "" || model.LOG_DB == nil {
-		return
-	}
-	if err := model.DeleteLogDetailIfNoLog(requestId); err != nil {
-		logger.LogError(c, "failed to cleanup orphan log detail: "+err.Error())
-	}
+	rawResponse.Text = ""
+	return rawResponse, true
 }
 
-func SetLogDetailError(c *gin.Context, info *relaycommon.RelayInfo, statusCode int, errText string) {
+func SetLogDetailError(c *gin.Context, statusCode int, errText string) {
 	if c == nil || strings.TrimSpace(errText) == "" {
 		return
 	}
-	if !isLogDetailCaptureActive(c) {
+	capture := getLogDetailCapture(c)
+	if capture == nil {
 		return
 	}
-	requestId := requestIdFromContext(c, info)
-	if requestId == "" {
-		return
+	contentType := ""
+	if c.Writer != nil {
+		contentType = c.Writer.Header().Get("Content-Type")
 	}
-	text := sanitizeTextBody(errText, c.Writer.Header().Get("Content-Type"))
-	meta := buildLogDetailMeta(c, info, statusCode)
-	applyTextMeta(&meta, "error", text)
-	metaJSON := marshalLogDetailMeta(meta)
-	updateLogDetailFields(requestId, map[string]interface{}{
-		"status_code":       statusCode,
-		"error_body":        text.Text,
-		"request_params":    metaJSON,
-		"content_truncated": gorm.Expr("content_truncated OR ?", text.Truncated),
-		"content_omitted":   gorm.Expr("content_omitted OR ?", text.Omitted),
-		"omit_reason":       mergedOmitReasonExpr(text.Reason),
-		"updated_at":        common.GetTimestamp(),
-	})
-}
-
-func UpdateLogDetailMeta(c *gin.Context, info *relaycommon.RelayInfo, statusCode int, responseContentType string) {
-	if c == nil {
-		return
-	}
-	if !isLogDetailCaptureActive(c) {
-		return
-	}
-	requestId := requestIdFromContext(c, info)
-	if requestId == "" {
-		return
-	}
-	meta := buildLogDetailMeta(c, info, statusCode)
-	meta.ResponseContentType = responseContentType
-	updateLogDetailFields(requestId, map[string]interface{}{
-		"status_code":    statusCode,
-		"is_stream":      meta.IsStream,
-		"request_params": marshalLogDetailMeta(meta),
-		"updated_at":     common.GetTimestamp(),
-	})
+	text := sanitizeTextBody(errText, contentType)
+	capture.mu.Lock()
+	capture.statusCode = statusCode
+	capture.errorBody = text
+	capture.mu.Unlock()
 }
 
 func GetLogDetail(c *gin.Context, requestId string, isAdmin bool) (*model.LogDetail, error) {
@@ -604,7 +599,8 @@ func readLimitedStorageText(storage common.BodyStorage, contentType string) (log
 	if _, err := storage.Seek(0, io.SeekStart); err != nil {
 		return logDetailText{}, err
 	}
-	data, err := io.ReadAll(io.LimitReader(storage, int64(logDetailTextLimitBytes+1)))
+	limit := currentLogDetailTextLimitBytes()
+	data, err := io.ReadAll(io.LimitReader(storage, int64(limit+1)))
 	if err != nil {
 		return logDetailText{}, err
 	}
@@ -885,8 +881,9 @@ func summarizeMultipartText(reader io.Reader, originalSize int64, contentType st
 			omittedFiles = append(omittedFiles, name)
 			continue
 		}
-		value, _ := io.ReadAll(io.LimitReader(part, int64(logDetailTextLimitBytes+1)))
-		fields[name] = append(fields[name], truncatePlainText(string(value), logDetailTextLimitBytes))
+		limit := currentLogDetailTextLimitBytes()
+		value, _ := io.ReadAll(io.LimitReader(part, int64(limit+1)))
+		fields[name] = append(fields[name], truncatePlainText(string(value), limit))
 	}
 	summary["text_fields"] = fields
 	if len(omittedFiles) > 0 {
@@ -913,7 +910,7 @@ func summarizeParsedMultipartForm(form *multipart.Form, originalSize int64) logD
 	fields := make(map[string][]string)
 	for name, values := range form.Value {
 		for _, value := range values {
-			fields[name] = append(fields[name], truncatePlainText(value, logDetailTextLimitBytes))
+			fields[name] = append(fields[name], truncatePlainText(value, currentLogDetailTextLimitBytes()))
 		}
 	}
 	omittedFiles := make([]string, 0)
@@ -991,7 +988,7 @@ func buildLogDetailMeta(c *gin.Context, info *relaycommon.RelayInfo, statusCode 
 		Method:            requestMethod(c),
 		Path:              requestPath(c),
 		StatusCode:        statusCode,
-		ContentLimitBytes: logDetailTextLimitBytes,
+		ContentLimitBytes: currentLogDetailTextLimitBytes(),
 	}
 	if c != nil {
 		meta.UpstreamRequestID = c.GetString(common.UpstreamRequestIdKey)
@@ -1065,35 +1062,6 @@ func marshalLogDetailMeta(meta logDetailMeta) string {
 		return "{}"
 	}
 	return string(data)
-}
-
-func upsertLogDetail(c *gin.Context, detail model.LogDetail, columns []string) {
-	if model.LOG_DB == nil {
-		return
-	}
-	if err := model.LOG_DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "request_id"}},
-		DoUpdates: clause.AssignmentColumns(columns),
-	}).Create(&detail).Error; err != nil {
-		logger.LogError(c, "failed to upsert log detail: "+err.Error())
-	}
-}
-
-func updateLogDetailFields(requestId string, fields map[string]interface{}) {
-	if model.LOG_DB == nil || requestId == "" || len(fields) == 0 {
-		return
-	}
-	if err := model.LOG_DB.Model(&model.LogDetail{}).Where("request_id = ?", requestId).Updates(fields).Error; err != nil {
-		common.SysError("failed to update log detail: " + err.Error())
-	}
-}
-
-func mergedOmitReasonExpr(reason string) interface{} {
-	reason = truncatePlainText(reason, 255)
-	if reason == "" {
-		return gorm.Expr("omit_reason")
-	}
-	return gorm.Expr("CASE WHEN omit_reason = '' THEN ? ELSE omit_reason END", reason)
 }
 
 func requestIdFromContext(c *gin.Context, info *relaycommon.RelayInfo) string {

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,9 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
 	common.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	common.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(common.LogConsumeEnabled)
+	common.OptionMap["LogDetailEnabled"] = strconv.FormatBool(common.LogDetailEnabled)
+	common.OptionMap["LogDetailRetentionDays"] = strconv.Itoa(common.LogDetailRetentionDays)
+	common.OptionMap["LogDetailMaxBodyKB"] = strconv.Itoa(common.LogDetailMaxBodyKB)
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -314,6 +318,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticEnableChannelEnabled = boolValue
 		case "LogConsumeEnabled":
 			common.LogConsumeEnabled = boolValue
+		case "LogDetailEnabled":
+			common.LogDetailEnabled = boolValue
 		case "DisplayInCurrencyEnabled":
 			// 兼容旧字段：同步到新配置 general_setting.quota_display_type（运行时生效）
 			// true -> USD, false -> TOKENS
@@ -516,6 +522,18 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaRemindThreshold, _ = strconv.Atoi(value)
 	case "PreConsumedQuota":
 		common.PreConsumedQuota, _ = strconv.Atoi(value)
+	case "LogDetailRetentionDays":
+		intValue, parseErr := strconv.Atoi(value)
+		if parseErr != nil || intValue < 0 || intValue > common.MaxLogDetailRetentionDays {
+			return fmt.Errorf("invalid log detail retention days: %s", value)
+		}
+		common.LogDetailRetentionDays = intValue
+	case "LogDetailMaxBodyKB":
+		intValue, parseErr := strconv.Atoi(value)
+		if parseErr != nil || intValue < common.MinLogDetailBodyKB || intValue > common.MaxLogDetailBodyKB {
+			return fmt.Errorf("invalid log detail body limit: %s", value)
+		}
+		common.LogDetailMaxBodyKB = intValue
 	case "ModelRequestRateLimitCount":
 		setting.ModelRequestRateLimitCount, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitDurationMinutes":

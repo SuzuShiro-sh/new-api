@@ -90,7 +90,16 @@ var EmailLoginAuthServerList = []string{
 var DebugEnabled bool
 var MemoryCacheEnabled bool
 
+const (
+	MinLogDetailBodyKB        = 16
+	MaxLogDetailBodyKB        = 5 * 1024
+	MaxLogDetailRetentionDays = 3650
+)
+
 var LogConsumeEnabled = true
+var LogDetailEnabled = true
+var LogDetailRetentionDays = 3
+var LogDetailMaxBodyKB = MaxLogDetailBodyKB
 
 var TLSInsecureSkipVerify bool
 var InsecureTLSConfig = &tls.Config{InsecureSkipVerify: true}
