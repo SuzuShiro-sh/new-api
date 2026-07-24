@@ -132,6 +132,23 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
       meta: { mobileBadge: true },
     },
     {
+      accessorKey: 'log_detail_enabled',
+      header: t('Request details'),
+      cell: ({ row }) => {
+        const enabled = row.getValue('log_detail_enabled') as boolean
+        return (
+          <StatusBadge
+            label={enabled ? t('Enabled') : t('Disabled')}
+            variant={enabled ? 'warning' : 'neutral'}
+            copyable={false}
+            className='-ml-1.5'
+          />
+        )
+      },
+      size: 140,
+      meta: { mobileHidden: true },
+    },
+    {
       id: 'key',
       accessorKey: 'key',
       header: t('API Key'),

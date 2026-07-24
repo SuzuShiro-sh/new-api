@@ -175,7 +175,8 @@ func CaptureRelayRequestDetail(c *gin.Context, info *relaycommon.RelayInfo) {
 	if c == nil || info == nil {
 		return
 	}
-	if !common.LogConsumeEnabled || !common.LogDetailEnabled {
+	if !common.LogConsumeEnabled || !common.LogDetailEnabled ||
+		!common.GetContextKeyBool(c, constant.ContextKeyTokenLogDetailEnabled) {
 		return
 	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {

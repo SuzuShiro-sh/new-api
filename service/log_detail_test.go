@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDeduplicateRawResponseRemovesOnlyIdenticalBody(t *testing.T) {
@@ -312,6 +313,7 @@ func TestCaptureRelayRequestDetailSkipsWhenConsumeLogDisabled(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt","messages":[]}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set(common.RequestIdKey, "req_skip_detail")
+	common.SetContextKey(c, constant.ContextKeyTokenLogDetailEnabled, true)
 	originalBody := io.NopCloser(strings.NewReader(`{"id":"resp"}`))
 	resp := &http.Response{
 		Header: make(http.Header),
@@ -354,6 +356,7 @@ func TestCaptureRelayRequestDetailSkipsWhenDetailCaptureDisabled(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt"}`))
 	c.Set(common.RequestIdKey, "req_detail_disabled")
+	common.SetContextKey(c, constant.ContextKeyTokenLogDetailEnabled, true)
 
 	CaptureRelayRequestDetail(c, &relaycommon.RelayInfo{
 		RequestId:   "req_detail_disabled",
@@ -365,6 +368,57 @@ func TestCaptureRelayRequestDetailSkipsWhenDetailCaptureDisabled(t *testing.T) {
 	assert.False(t, captured)
 	_, wrapped := c.Writer.(*LogDetailResponseWriter)
 	assert.False(t, wrapped)
+}
+
+// TestCaptureRelayRequestDetailRequiresTokenOptIn 验证详情采集默认关闭且只能由令牌显式开启.
+func TestCaptureRelayRequestDetailRequiresTokenOptIn(t *testing.T) {
+	oldLogConsumeEnabled := common.LogConsumeEnabled
+	oldLogDetailEnabled := common.LogDetailEnabled
+	common.LogConsumeEnabled = true
+	common.LogDetailEnabled = true
+	t.Cleanup(func() {
+		common.LogConsumeEnabled = oldLogConsumeEnabled
+		common.LogDetailEnabled = oldLogDetailEnabled
+	})
+
+	for _, test := range []struct {
+		name        string
+		setContext  bool
+		tokenOptIn  bool
+		wantCapture bool
+	}{
+		{name: "missing token setting defaults to disabled"},
+		{name: "explicitly disabled", setContext: true},
+		{name: "explicitly enabled", setContext: true, tokenOptIn: true, wantCapture: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(`{"model":"gpt"}`),
+			)
+			ctx.Set(common.RequestIdKey, "req_token_detail_setting")
+			if test.setContext {
+				common.SetContextKey(ctx, constant.ContextKeyTokenLogDetailEnabled, test.tokenOptIn)
+			}
+
+			CaptureRelayRequestDetail(ctx, &relaycommon.RelayInfo{
+				RequestId:   "req_token_detail_setting",
+				UserId:      1,
+				RelayFormat: types.RelayFormatOpenAI,
+			})
+
+			_, captured := ctx.Get(logDetailContextKey)
+			assert.Equal(t, test.wantCapture, captured)
+			_, wrapped := ctx.Writer.(*LogDetailResponseWriter)
+			assert.Equal(t, test.wantCapture, wrapped)
+			if test.wantCapture {
+				require.NotNil(t, getLogDetailCapture(ctx))
+			}
+		})
+	}
 }
 
 func TestExtractRequestDetailTextUsesParsedMultipartForm(t *testing.T) {

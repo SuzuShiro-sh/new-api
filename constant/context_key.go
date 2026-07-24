@@ -19,6 +19,7 @@ const (
 	ContextKeyTokenModelLimitEnabled ContextKey = "token_model_limit_enabled"
 	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
 	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
+	ContextKeyTokenLogDetailEnabled  ContextKey = "token_log_detail_enabled"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"

@@ -549,7 +549,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                   </FormLabel>
                   <FormDescription>
                     {t(
-                      'Store request and response bodies for recent usage logs. This content can be sensitive and increases database usage.'
+                      'Allow API keys with detail logging enabled to store request and response bodies. This content can be sensitive and increases database usage.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>

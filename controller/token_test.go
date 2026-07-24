@@ -16,6 +16,8 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -32,10 +34,11 @@ type tokenPageResponse struct {
 }
 
 type tokenResponseItem struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Key    string `json:"key"`
-	Status int    `json:"status"`
+	ID               int    `json:"id"`
+	Name             string `json:"name"`
+	Key              string `json:"key"`
+	Status           int    `json:"status"`
+	LogDetailEnabled bool   `json:"log_detail_enabled"`
 }
 
 type tokenKeyResponse struct {
@@ -387,6 +390,60 @@ func TestTokenMigrationFromChar48ToVarchar128Postgres(t *testing.T) {
 
 	db, managedTokensTable := openTokenControllerExternalDB(t, "postgres", dsn)
 	runTokenMigrationCompatibilityTest(t, db, "postgres", managedTokensTable)
+}
+
+// TestAddTokenDisablesLogDetailByDefault 验证新令牌在未指定时默认不记录详情.
+func TestAddTokenDisablesLogDetailByDefault(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	body := map[string]any{
+		"name":                 "default-detail-setting",
+		"expired_time":         -1,
+		"remain_quota":         0,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+	var stored model.Token
+	require.NoError(t, db.Where("name = ?", "default-detail-setting").First(&stored).Error)
+	assert.False(t, stored.LogDetailEnabled)
+}
+
+// TestUpdateTokenPersistsLogDetailEnabled 验证令牌编辑接口可以显式开启详情记录.
+func TestUpdateTokenPersistsLogDetailEnabled(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	token := seedToken(t, db, 1, "detail-setting-token", "detail1234token5678")
+	body := map[string]any{
+		"id":                   token.Id,
+		"name":                 token.Name,
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+		"log_detail_enabled":   true,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+	UpdateToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+	var detail tokenResponseItem
+	require.NoError(t, common.Unmarshal(response.Data, &detail))
+	assert.True(t, detail.LogDetailEnabled)
+	var stored model.Token
+	require.NoError(t, db.First(&stored, token.Id).Error)
+	assert.True(t, stored.LogDetailEnabled)
 }
 
 func TestGetAllTokensMasksKeyInResponse(t *testing.T) {

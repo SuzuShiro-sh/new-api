@@ -310,6 +310,9 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := backfillTokenLogDetailEnabled(); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}
@@ -391,6 +394,9 @@ func migrateDBFast() error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := backfillTokenLogDetailEnabled(); err != nil {
+		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
@@ -634,6 +640,16 @@ PRIMARY KEY (` + "`id`" + `)
 		}
 	}
 	return nil
+}
+
+// backfillTokenLogDetailEnabled 将升级前令牌的详情采集状态显式初始化为关闭.
+func backfillTokenLogDetailEnabled() error {
+	if !DB.Migrator().HasTable(&Token{}) || !DB.Migrator().HasColumn(&Token{}, "log_detail_enabled") {
+		return nil
+	}
+	return DB.Unscoped().Model(&Token{}).
+		Where("log_detail_enabled IS NULL").
+		Update("log_detail_enabled", false).Error
 }
 
 // migrateTokenModelLimitsToText migrates model_limits column from varchar(1024) to text

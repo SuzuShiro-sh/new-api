@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -40,6 +41,25 @@ func setupDashboardAuthMiddlewareTest(t *testing.T) {
 		common.RedisEnabled = previousRedis
 		common.SessionSecret = previousSecret
 	})
+}
+
+// TestSetupContextForTokenPropagatesLogDetailSetting 验证认证上下文传播令牌详情开关.
+func TestSetupContextForTokenPropagatesLogDetailSetting(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			token := &model.Token{
+				Id:               1,
+				UserId:           2,
+				Key:              "context-token",
+				LogDetailEnabled: enabled,
+			}
+
+			require.NoError(t, SetupContextForToken(ctx, token))
+			assert.Equal(t, enabled, common.GetContextKeyBool(ctx, constant.ContextKeyTokenLogDetailEnabled))
+		})
+	}
 }
 
 func issueExpiredDashboardAccessToken(t *testing.T, identity service.AuthIdentity) string {
