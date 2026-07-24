@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -65,6 +66,14 @@ type logDetailPayload struct {
 	ResponseBody    string `json:"response_body,omitempty"`
 	RawResponseBody string `json:"raw_response_body,omitempty"`
 	ErrorBody       string `json:"error_body,omitempty"`
+}
+
+// mySQLTableMaintenanceResult 保存 MySQL/MariaDB 表维护语句返回的逐行状态.
+type mySQLTableMaintenanceResult struct {
+	TableName   string `gorm:"column:Table"`
+	Operation   string `gorm:"column:Op"`
+	MessageType string `gorm:"column:Msg_type"`
+	MessageText string `gorm:"column:Msg_text"`
 }
 
 // LogDetail 保存一次中继请求的文本详情. 新记录写入压缩负载, 历史文本列仅用于兼容旧数据.
@@ -302,7 +311,11 @@ func ReclaimLogDetailStorage(ctx context.Context) error {
 			return fmt.Errorf("failed to vacuum SQLite log database: %w", err)
 		}
 	case common.DatabaseTypeMySQL:
-		if err := db.Exec("OPTIMIZE TABLE `log_details`").Error; err != nil {
+		var results []mySQLTableMaintenanceResult
+		if err := db.Raw("OPTIMIZE TABLE `log_details`").Scan(&results).Error; err != nil {
+			return fmt.Errorf("failed to optimize MySQL log detail table: %w", err)
+		}
+		if err := validateMySQLTableMaintenanceResults(results); err != nil {
 			return fmt.Errorf("failed to optimize MySQL log detail table: %w", err)
 		}
 	case common.DatabaseTypePostgreSQL:
@@ -311,6 +324,41 @@ func ReclaimLogDetailStorage(ctx context.Context) error {
 		}
 	default:
 		return fmt.Errorf("unsupported log database type: %s", common.LogDatabaseType())
+	}
+	return nil
+}
+
+// validateMySQLTableMaintenanceResults 确保表维护结果包含最终成功状态且没有表级错误.
+func validateMySQLTableMaintenanceResults(results []mySQLTableMaintenanceResult) error {
+	if len(results) == 0 {
+		return errors.New("OPTIMIZE TABLE returned no result")
+	}
+
+	statusOK := false
+	failures := make([]string, 0, 1)
+	messages := make([]string, 0, len(results))
+	for _, result := range results {
+		messageType := strings.TrimSpace(result.MessageType)
+		messageText := strings.TrimSpace(result.MessageText)
+		if messageType == "" && messageText == "" {
+			continue
+		}
+		messages = append(messages, fmt.Sprintf("%s: %s", messageType, messageText))
+		switch {
+		case strings.EqualFold(messageType, "error"):
+			failures = append(failures, messageText)
+		case strings.EqualFold(messageType, "status") && strings.EqualFold(messageText, "OK"):
+			statusOK = true
+		case strings.EqualFold(messageType, "status"):
+			failures = append(failures, messageText)
+		}
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("OPTIMIZE TABLE reported failure: %s", strings.Join(failures, "; "))
+	}
+	if !statusOK {
+		return fmt.Errorf("OPTIMIZE TABLE did not report status OK: %s", strings.Join(messages, "; "))
 	}
 	return nil
 }

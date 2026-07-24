@@ -152,6 +152,60 @@ func TestReclaimLogDetailStorageShrinksSQLiteFile(t *testing.T) {
 	assert.Less(t, afterReclaim.Size(), beforeReclaim.Size()/2)
 }
 
+func TestValidateMySQLTableMaintenanceResults(t *testing.T) {
+	tests := []struct {
+		name      string
+		results   []mySQLTableMaintenanceResult
+		wantError string
+	}{
+		{
+			name: "rebuild note followed by success",
+			results: []mySQLTableMaintenanceResult{
+				{MessageType: "note", MessageText: "Table does not support optimize, doing recreate + analyze instead"},
+				{MessageType: "status", MessageText: "OK"},
+			},
+		},
+		{
+			name: "table-level error",
+			results: []mySQLTableMaintenanceResult{
+				{MessageType: "Error", MessageText: "The table '#sql-temp' is full"},
+				{MessageType: "status", MessageText: "Operation failed"},
+			},
+			wantError: "The table '#sql-temp' is full; Operation failed",
+		},
+		{
+			name: "non-success status",
+			results: []mySQLTableMaintenanceResult{
+				{MessageType: "status", MessageText: "Operation failed"},
+			},
+			wantError: "Operation failed",
+		},
+		{
+			name: "missing final status",
+			results: []mySQLTableMaintenanceResult{
+				{MessageType: "note", MessageText: "rebuild requested"},
+			},
+			wantError: "did not report status OK",
+		},
+		{
+			name:      "empty result",
+			wantError: "returned no result",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateMySQLTableMaintenanceResults(test.results)
+			if test.wantError == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.wantError)
+		})
+	}
+}
+
 func TestDeleteOldLogBatchDeletesMatchingLogDetails(t *testing.T) {
 	truncateTables(t)
 
