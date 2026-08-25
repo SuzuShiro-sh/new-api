@@ -174,6 +174,10 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	}
+	if validationErr := validateOptionBoundary(option.Key, option.Value.(string)); validationErr != nil {
+		common.ApiErrorMsg(c, validationErr.Error())
+		return
+	}
 	switch option.Key {
 	case "GitHubOAuthEnabled":
 		if option.Value == "true" && common.GitHubClientId == "" {

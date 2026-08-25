@@ -371,6 +371,12 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := migrateSharedLogDetailDatabase(); err != nil {
+		return err
+	}
+	if err := backfillTokenLogDetailEnabled(); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}
@@ -396,7 +402,7 @@ func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	return migrateSQLLogDatabase(LOG_DB)
 }
 
 func migrateClickHouseLogDB() error {

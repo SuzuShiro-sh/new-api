@@ -78,6 +78,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	var (
 		newAPIError *types.NewAPIError
+		relayInfo   *relaycommon.RelayInfo
 		ws          *websocket.Conn
 	)
 
@@ -95,6 +96,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			service.SetLogDetailError(c, newAPIError.StatusCode, newAPIError.Error())
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -109,6 +111,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				})
 			}
 		}
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
 	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
@@ -122,11 +125,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
-	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
+	relayInfo, err = relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	service.CaptureRelayRequestDetail(c, relayInfo)
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -441,6 +445,10 @@ func RelayMidjourney(c *gin.Context) {
 		})
 		return
 	}
+	service.CaptureRelayRequestDetail(c, relayInfo)
+	defer func() {
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
+	}()
 
 	var mjErr *taskdto.MidjourneyResponse
 	switch relayInfo.RelayMode {
@@ -463,6 +471,7 @@ func RelayMidjourney(c *gin.Context) {
 			mjErr.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
 			statusCode = http.StatusTooManyRequests
 		}
+		service.SetLogDetailError(c, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result))
 		c.JSON(statusCode, gin.H{
 			"description": fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result),
 			"type":        "upstream_error",
@@ -564,17 +573,25 @@ func RelayTask(c *gin.Context) {
 		relayInfo.Action = action
 	}
 
+	service.CaptureRelayRequestDetail(c, relayInfo)
+	defer func() {
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
+	}()
+
 	if taskErr := relay.ResolveOriginTask(c, relayInfo); taskErr != nil {
+		service.SetLogDetailError(c, taskErr.StatusCode, taskErr.Message)
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
 	if taskErr := relay.ApplyOriginTaskAffinity(c, relayInfo); taskErr != nil {
+		service.SetLogDetailError(c, taskErr.StatusCode, taskErr.Message)
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
 
 	outcome, taskErr := executeTaskSubmission(c, relayInfo)
 	if taskErr != nil {
+		service.SetLogDetailError(c, taskErr.StatusCode, taskErr.Message)
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
