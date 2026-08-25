@@ -19,25 +19,74 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 import { z } from 'zod'
 
-import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
+import { getCurrencyDisplay } from '@/lib/currency'
+import {
+  parseQuotaFromDollars,
+  quotaUnitsToDollars,
+  type QuotaDisplayContext,
+} from '@/lib/format'
 
-import { DEFAULT_GROUP } from '../constants'
+import {
+  DEFAULT_GROUP,
+  MAX_API_KEY_QUOTA_UNITS,
+  MAX_API_KEY_QUOTA_USD,
+} from '../constants'
 import type { ApiKey, ApiKeyFormData } from '../types'
 
 // ============================================================================
 // Form Schema
 // ============================================================================
 
-export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
+export interface ApiKeyQuotaLimit {
+  maximumUnits: number
+  maximumDisplayAmount: number
+}
+
+export type ApiKeyQuotaDisplay = QuotaDisplayContext
+
+export function getApiKeyQuotaLimit(
+  display: ApiKeyQuotaDisplay = getCurrencyDisplay()
+): ApiKeyQuotaLimit {
+  const quotaPerUnit = display.config.quotaPerUnit
+  if (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0) {
+    return { maximumUnits: 0, maximumDisplayAmount: 0 }
+  }
+
+  const maximumUnits = Math.min(
+    MAX_API_KEY_QUOTA_UNITS,
+    Math.trunc(MAX_API_KEY_QUOTA_USD * quotaPerUnit)
+  )
+  return {
+    maximumUnits,
+    maximumDisplayAmount: quotaUnitsToDollars(maximumUnits, display),
+  }
+}
+
+export function getApiKeyQuotaDisplayLabel(display: ApiKeyQuotaDisplay) {
+  if (display.meta.kind === 'tokens') return 'Tokens'
+  if (display.config.quotaDisplayType === 'CNY') return 'CNY'
+  if (display.config.quotaDisplayType === 'CUSTOM') {
+    return display.meta.kind === 'custom' ? display.meta.symbol : 'Custom'
+  }
+  return 'USD'
+}
+
+export function getApiKeyFormSchema(
+  t: TFunction,
+  maxAutoGroups = 5,
+  quotaDisplay: ApiKeyQuotaDisplay = getCurrencyDisplay()
+) {
   const autoGroupLimit =
     Number.isInteger(maxAutoGroups) && maxAutoGroups > 0 ? maxAutoGroups : 5
+  const quotaLimit = getApiKeyQuotaLimit(quotaDisplay)
 
   return z
     .object({
       name: z.string().min(1, t('Please enter a name')),
-      remain_quota_dollars: z.number().optional(),
+      remain_quota_dollars: z.number().finite().optional(),
       expired_time: z.date().optional(),
       unlimited_quota: z.boolean(),
+      log_detail_enabled: z.boolean(),
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       group: z.string().optional(),
@@ -93,6 +142,21 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
           path: ['remain_quota_dollars'],
           message: t('Quota must be zero or greater'),
         })
+        return
+      }
+
+      if (
+        data.remain_quota_dollars > quotaLimit.maximumDisplayAmount ||
+        parseQuotaFromDollars(data.remain_quota_dollars, quotaDisplay) >
+          quotaLimit.maximumUnits
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['remain_quota_dollars'],
+          message: t('Quota must not exceed {{max}}', {
+            max: quotaLimit.maximumDisplayAmount,
+          }),
+        })
       }
     })
 }
@@ -108,6 +172,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   remain_quota_dollars: 10,
   expired_time: undefined,
   unlimited_quota: true,
+  log_detail_enabled: false,
   model_limits: [],
   allow_ips: '',
   group: DEFAULT_GROUP,
@@ -118,10 +183,16 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
 }
 
 export function getApiKeyFormDefaultValues(
-  defaultUseAutoGroup: boolean
+  defaultUseAutoGroup: boolean,
+  quotaDisplay: ApiKeyQuotaDisplay = getCurrencyDisplay()
 ): ApiKeyFormValues {
+  const quotaLimit = getApiKeyQuotaLimit(quotaDisplay)
   return {
     ...API_KEY_FORM_DEFAULT_VALUES,
+    remain_quota_dollars: Math.min(
+      API_KEY_FORM_DEFAULT_VALUES.remain_quota_dollars ?? 0,
+      quotaLimit.maximumDisplayAmount
+    ),
     group: defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP,
     auto_groups_mode: 'inherit',
     auto_groups: [],
@@ -137,17 +208,38 @@ export function getApiKeyFormDefaultValues(
  * Transform form data to API payload
  */
 export function transformFormDataToPayload(
-  data: ApiKeyFormValues
+  data: ApiKeyFormValues,
+  options: {
+    quotaDisplay?: ApiKeyQuotaDisplay
+    originalQuotaUnits?: number
+    preserveOriginalQuota?: boolean
+  } = {}
 ): ApiKeyFormData {
+  let remainQuota = 0
+  if (!data.unlimited_quota) {
+    if (
+      options.preserveOriginalQuota === true &&
+      typeof options.originalQuotaUnits === 'number' &&
+      Number.isInteger(options.originalQuotaUnits) &&
+      options.originalQuotaUnits >= 0
+    ) {
+      remainQuota = options.originalQuotaUnits
+    } else {
+      remainQuota = parseQuotaFromDollars(
+        data.remain_quota_dollars || 0,
+        options.quotaDisplay
+      )
+    }
+  }
+
   return {
     name: data.name,
-    remain_quota: data.unlimited_quota
-      ? 0
-      : parseQuotaFromDollars(data.remain_quota_dollars || 0),
+    remain_quota: remainQuota,
     expired_time: data.expired_time
       ? Math.floor(data.expired_time.getTime() / 1000)
       : -1,
     unlimited_quota: data.unlimited_quota,
+    log_detail_enabled: data.log_detail_enabled,
     model_limits_enabled: data.model_limits.length > 0,
     model_limits: data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
@@ -166,7 +258,8 @@ export function transformFormDataToPayload(
 export function transformApiKeyToFormDefaults(
   apiKey: ApiKey,
   availableAutoGroups: string[] = [],
-  maxAutoGroups = 5
+  maxAutoGroups = 5,
+  quotaDisplay: ApiKeyQuotaDisplay = getCurrencyDisplay()
 ): ApiKeyFormValues {
   const availableSet = new Set(availableAutoGroups)
   const storedAutoGroups = apiKey.auto_groups ?? []
@@ -179,12 +272,13 @@ export function transformApiKeyToFormDefaults(
     name: apiKey.name,
     remain_quota_dollars: apiKey.unlimited_quota
       ? 0
-      : quotaUnitsToDollars(apiKey.remain_quota),
+      : quotaUnitsToDollars(apiKey.remain_quota, quotaDisplay),
     expired_time:
       apiKey.expired_time > 0
         ? new Date(apiKey.expired_time * 1000)
         : undefined,
     unlimited_quota: apiKey.unlimited_quota,
+    log_detail_enabled: apiKey.log_detail_enabled ?? false,
     model_limits: apiKey.model_limits
       ? apiKey.model_limits.split(',').filter(Boolean)
       : [],

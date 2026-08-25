@@ -81,10 +81,15 @@ export function formatQuota(quota: number): string {
 /**
  * Parse quota from the current display input back to quota units.
  */
-export function parseQuotaFromDollars(amount: number): number {
+export type QuotaDisplayContext = ReturnType<typeof getCurrencyDisplay>
+
+export function parseQuotaFromDollars(
+  amount: number,
+  display: QuotaDisplayContext = getCurrencyDisplay()
+): number {
   if (!Number.isFinite(amount)) return 0
 
-  const { config, meta } = getCurrencyDisplay()
+  const { config, meta } = display
 
   // Tokens-only or raw quota mode
   if (meta.kind === 'tokens') {
@@ -103,8 +108,11 @@ export function parseQuotaFromDollars(amount: number): number {
  * Convert quota units to the configured display amount.
  * Reverse of parseQuotaFromDollars.
  */
-export function quotaUnitsToDollars(units: number): number {
-  const { config, meta } = getCurrencyDisplay()
+export function quotaUnitsToDollars(
+  units: number,
+  display: QuotaDisplayContext = getCurrencyDisplay()
+): number {
+  const { config, meta } = display
   return quotaUnitsToDisplayAmount(units, config.quotaPerUnit, meta)
 }
 

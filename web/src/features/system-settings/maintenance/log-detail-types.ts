@@ -16,18 +16,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-// ============================================================================
-// Form Utilities
-// ============================================================================
-export {
-  getApiKeyFormSchema,
-  getApiKeyQuotaDisplayLabel,
-  getApiKeyQuotaLimit,
-  type ApiKeyQuotaDisplay,
-  type ApiKeyQuotaLimit,
-  type ApiKeyFormValues,
-  API_KEY_FORM_DEFAULT_VALUES,
-  getApiKeyFormDefaultValues,
-  transformFormDataToPayload,
-  transformApiKeyToFormDefaults,
-} from './api-key-form'
+// 本文件定义请求响应详情维护任务的前端契约。
+import type { LogCleanupTaskState, SystemTask } from '../types'
+
+export type LogDetailCleanupMode = 'expired' | 'all'
+
+export type LogDetailCleanupTaskPayload = {
+  mode?: LogDetailCleanupMode
+  target_timestamp: number
+  batch_size: number
+  reclaim_space: boolean
+}
+
+export type LogDetailCleanupTaskResult = {
+  mode?: LogDetailCleanupMode
+  deleted_count: number
+  space_reclaimed: boolean
+  partial?: boolean
+}
+
+export type LogDetailCleanupTask = SystemTask<
+  LogDetailCleanupTaskPayload,
+  LogCleanupTaskState,
+  LogDetailCleanupTaskResult
+>

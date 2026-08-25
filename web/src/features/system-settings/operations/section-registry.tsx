@@ -20,6 +20,7 @@ import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
+import { LogDetailSettingsSection } from '../maintenance/log-detail-settings-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
@@ -98,6 +99,19 @@ const OPERATIONS_SECTIONS = [
     build: (settings: OperationsSettings) => (
       <LogSettingsSection
         defaultEnabled={Boolean(settings.LogConsumeEnabled)}
+      />
+    ),
+  },
+  {
+    id: 'log-details',
+    titleKey: 'Request Detail Logs',
+    build: (settings: OperationsSettings) => (
+      <LogDetailSettingsSection
+        defaultValues={{
+          LogDetailEnabled: Boolean(settings.LogDetailEnabled),
+          LogDetailRetentionDays: settings.LogDetailRetentionDays,
+          LogDetailMaxBodyKB: settings.LogDetailMaxBodyKB,
+        }}
       />
     ),
   },
