@@ -34,7 +34,8 @@ func (input *tokenAutoGroupsInput) UnmarshalJSON(data []byte) error {
 
 type tokenRequest struct {
 	model.Token
-	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
+	AutoGroups       tokenAutoGroupsInput `json:"auto_groups"`
+	LogDetailEnabled *bool                `json:"log_detail_enabled"`
 }
 
 type tokenResponse struct {
@@ -344,6 +345,7 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		LogDetailEnabled:   request.LogDetailEnabled != nil && *request.LogDetailEnabled,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -446,6 +448,9 @@ func UpdateToken(c *gin.Context) {
 			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
 				return
 			}
+		}
+		if request.LogDetailEnabled != nil {
+			cleanToken.LogDetailEnabled = *request.LogDetailEnabled
 		}
 	}
 	err = cleanToken.Update()
