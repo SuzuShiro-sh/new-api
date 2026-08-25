@@ -18,7 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
+import {
+  ChevronDown,
+  FileSearch,
+  KeyRound,
+  Settings2,
+  WalletCards,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm, type SubmitErrorHandler } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -64,7 +70,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useStatus } from '@/hooks/use-status'
 import { getUserModels, getUserGroups } from '@/lib/api'
-import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
+import { getCurrencyDisplay } from '@/lib/currency'
 import { cn } from '@/lib/utils'
 
 import {
@@ -76,6 +82,9 @@ import {
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
   getApiKeyFormSchema,
+  getApiKeyQuotaDisplayLabel,
+  getApiKeyQuotaLimit,
+  type ApiKeyQuotaDisplay,
   type ApiKeyFormValues,
   getApiKeyFormDefaultValues,
   transformFormDataToPayload,
@@ -107,6 +116,12 @@ export function ApiKeysMutateDrawer({
   const { status, loading: statusLoading } = useStatus()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [quotaDisplay, setQuotaDisplay] = useState<ApiKeyQuotaDisplay>(() =>
+    getCurrencyDisplay()
+  )
+  const [originalQuotaUnits, setOriginalQuotaUnits] = useState<
+    number | undefined
+  >()
   const [initializedTarget, setInitializedTarget] = useState<string | null>(
     null
   )
@@ -188,14 +203,21 @@ export function ApiKeysMutateDrawer({
     Number(autoGroupsData?.data?.max_count) > 0
       ? Number(autoGroupsData?.data?.max_count)
       : 5
+  const quotaLimit = useMemo(
+    () => getApiKeyQuotaLimit(quotaDisplay),
+    [quotaDisplay]
+  )
   const schema = useMemo(
-    () => getApiKeyFormSchema(t, maxAutoGroups),
-    [t, maxAutoGroups]
+    () => getApiKeyFormSchema(t, maxAutoGroups, quotaDisplay),
+    [t, maxAutoGroups, quotaDisplay]
   )
 
   const form = useForm<ApiKeyFormValues>({
     resolver: zodResolver(schema),
-    defaultValues: getApiKeyFormDefaultValues(defaultUseAutoGroup),
+    defaultValues: getApiKeyFormDefaultValues(
+      defaultUseAutoGroup,
+      quotaDisplay
+    ),
   })
 
   // Load existing data when updating
@@ -217,20 +239,28 @@ export function ApiKeysMutateDrawer({
 
     const target = isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
     if (initializedTarget === target) return
+    const quotaDisplaySnapshot = getCurrencyDisplay()
+    setQuotaDisplay(quotaDisplaySnapshot)
     if (isUpdate && currentRow) {
       if (apiKeyData?.success && apiKeyData.data) {
+        setOriginalQuotaUnits(apiKeyData.data.remain_quota)
         form.reset(
           transformApiKeyToFormDefaults(
             apiKeyData.data,
             availableAutoGroupNames,
-            maxAutoGroups
+            maxAutoGroups,
+            quotaDisplaySnapshot
           )
         )
         setInitializedTarget(target)
       }
     } else {
+      setOriginalQuotaUnits(undefined)
       form.reset(
-        getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
+        getApiKeyFormDefaultValues(
+          defaultUseAutoGroup && backendHasAuto,
+          quotaDisplaySnapshot
+        )
       )
       setInitializedTarget(target)
     }
@@ -280,7 +310,12 @@ export function ApiKeysMutateDrawer({
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)
     try {
-      const basePayload = transformFormDataToPayload(data)
+      const basePayload = transformFormDataToPayload(data, {
+        quotaDisplay,
+        originalQuotaUnits,
+        preserveOriginalQuota:
+          isUpdate && !form.formState.dirtyFields.remain_quota_dollars,
+      })
 
       if (isUpdate && currentRow) {
         const result = await updateApiKey({
@@ -350,9 +385,8 @@ export function ApiKeysMutateDrawer({
     form.setValue('expired_time', now)
   }
 
-  const { meta: currencyMeta } = getCurrencyDisplay()
-  const currencyLabel = getCurrencyLabel()
-  const tokensOnly = currencyMeta.kind === 'tokens'
+  const currencyLabel = getApiKeyQuotaDisplayLabel(quotaDisplay)
+  const tokensOnly = quotaDisplay.meta.kind === 'tokens'
   const quotaLabel = t('Quota ({{currency}})', { currency: currencyLabel })
   const quotaPlaceholder = tokensOnly
     ? t('Enter quota in tokens')
@@ -619,7 +653,8 @@ export function ApiKeysMutateDrawer({
                         <Input
                           {...field}
                           type='number'
-                          step={tokensOnly ? 1 : 0.01}
+                          step={tokensOnly ? 1 : 'any'}
+                          max={quotaLimit.maximumDisplayAmount}
                           placeholder={quotaPlaceholder}
                           onChange={(e) =>
                             field.onChange(
@@ -652,6 +687,41 @@ export function ApiKeysMutateDrawer({
                       </FormLabel>
                       <FormDescription className='text-xs'>
                         {t('Enable unlimited quota for this API key')}
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </SideDrawerSection>
+
+            <SideDrawerSection>
+              <SideDrawerSectionHeader
+                title={t('Request detail logging')}
+                description={t(
+                  'Choose whether this API key stores request and response details.'
+                )}
+                icon={<FileSearch className='size-4' />}
+                iconTone='warning'
+              />
+              <FormField
+                control={form.control}
+                name='log_detail_enabled'
+                render={({ field }) => (
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <div className='flex min-w-0 flex-col gap-0.5'>
+                      <FormLabel className='text-sm'>
+                        {t('Record request and response details')}
+                      </FormLabel>
+                      <FormDescription className='text-xs'>
+                        {t(
+                          'Disabled by default. The global detail logging settings and retention policy still apply.'
+                        )}
                       </FormDescription>
                     </div>
                     <FormControl>

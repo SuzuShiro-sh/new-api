@@ -87,6 +87,7 @@ import {
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { PluginAuthorLink } from '../plugin-author-link'
 import { DetailRow, DetailSection } from './log-detail-layout'
+import { RequestResponseDetailLazy } from './request-response-detail-lazy'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -443,6 +444,9 @@ interface DetailsDialogProps {
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
+  const requestId = props.log.request_id ?? ''
+  const showRequestResponseDetail =
+    requestId.length > 0 && isRequestResponseDetailType(props.log.type)
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
 
@@ -575,7 +579,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
     props.isAdmin &&
     props.log.type !== 6 &&
     (other?.request_path || conversionChain.length > 0)
-
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
@@ -602,7 +605,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentClassName={cn(
         'min-w-0 overflow-hidden',
         'max-sm:max-h-[calc(100dvh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
-        isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
+        isTieredBilling || showRequestResponseDetail
+          ? 'sm:max-w-4xl lg:max-w-5xl'
+          : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
@@ -784,6 +789,17 @@ export function DetailsDialog(props: DetailsDialogProps) {
               value={other.admin_info.quota_saturation.op}
               mono
             />
+          </DetailSection>
+        )}
+
+        {showRequestResponseDetail && (
+          <DetailSection label={t('Request and Response')}>
+            {props.open && (
+              <RequestResponseDetailLazy
+                requestId={requestId}
+                isAdmin={props.isAdmin}
+              />
+            )}
           </DetailSection>
         )}
 
@@ -1301,4 +1317,8 @@ export function DetailsDialog(props: DetailsDialogProps) {
 
 function isDisplayableType(type: number): boolean {
   return [0, 2, 5, 6].includes(type)
+}
+
+function isRequestResponseDetailType(type: number): boolean {
+  return [2, 5].includes(type)
 }
