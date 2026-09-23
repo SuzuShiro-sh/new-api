@@ -1,8 +1,8 @@
 package model
 
 import (
-	"maps"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -244,10 +244,6 @@ func validateOptionValue(key string, value string) error {
 		}
 	}
 
-	if key == operation_setting.ToolPriceOptionKey {
-		return operation_setting.ValidateToolPricesJSON(value)
-	}
-	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
