@@ -412,6 +412,63 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	assert.Equal(t, http.StatusOK, middlewareBearerRequest(router, "/api/user/self", profile).Code, "the deadline only retires legacy tokens")
 }
 
+func TestLogDetailAccessTokenScopes(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	gin.SetMode(gin.TestMode)
+	wasMaster := common.IsMasterNode
+	common.IsMasterNode = true
+	t.Cleanup(func() { common.IsMasterNode = wasMaster })
+	root := createMiddlewarePATUser(t, "detail-root", "detail-root-legacy")
+	require.NoError(t, model.DB.Model(root).Update("role", common.RoleRootUser).Error)
+	user := createMiddlewarePATUser(t, "detail-user", "detail-user-legacy")
+	denied, _ := createMiddlewareScopedToken(t, root.Id, 0, "profile:read")
+
+	for _, route := range []struct {
+		method, path, scope string
+		auth                gin.HandlerFunc
+		userAllowed         bool
+	}{
+		{http.MethodGet, "/api/log/detail/:request_id", "log:read", AdminAuth(), false},
+		{http.MethodGet, "/api/log/self/detail/:request_id", "usage:read", UserAuth(), true},
+		{http.MethodPost, "/api/system-task/log-detail-cleanup", "ops:write", RootAuth(), false},
+		{http.MethodPost, "/api/system-task/log-detail-clear-all", "ops:write", RootAuth(), false},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			granted, _ := createMiddlewareScopedToken(t, root.Id, 0, route.scope)
+			userToken, _ := createMiddlewareScopedToken(t, user.Id, 0, route.scope)
+			userStatus := http.StatusForbidden
+			userCode := "AUTH_INSUFFICIENT_PRIVILEGE"
+			if route.userAllowed {
+				userStatus = http.StatusNoContent
+				userCode = ""
+			}
+			engine := gin.New()
+			engine.Handle(route.method, route.path, route.auth, func(c *gin.Context) {
+				c.Status(http.StatusNoContent)
+			})
+			for _, test := range []struct {
+				name, token, code string
+				status            int
+			}{
+				{"granted scope", granted, "", http.StatusNoContent},
+				{"missing scope", denied, "ACCESS_TOKEN_SCOPE_DENIED", http.StatusForbidden},
+				{"account role remains enforced", userToken, userCode, userStatus},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					request := httptest.NewRequest(route.method, strings.ReplaceAll(route.path, ":request_id", "request-1"), nil)
+					request.Header.Set("Authorization", "Bearer "+test.token)
+					response := httptest.NewRecorder()
+					engine.ServeHTTP(response, request)
+					assert.Equal(t, test.status, response.Code, response.Body.String())
+					if test.code != "" {
+						assert.Contains(t, response.Body.String(), `"code":"`+test.code+`"`)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestAccessTokenIdentityAndSingleLookup(t *testing.T) {
 	setupDashboardAuthMiddlewareTest(t)
 	gin.SetMode(gin.TestMode)

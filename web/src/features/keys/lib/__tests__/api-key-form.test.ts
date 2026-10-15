@@ -34,6 +34,7 @@ const apiKeyFixture: ApiKey = {
   used_quota: 0,
   unlimited_quota: true,
   log_detail_enabled: true,
+  allow_user_quota_query: false,
   expired_time: -1,
   created_time: 1,
   accessed_time: 1,

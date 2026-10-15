@@ -402,6 +402,20 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	if fetched.Key != longKey {
 		t.Fatalf("expected long token key %q, got %q", longKey, fetched.Key)
 	}
+
+	// 两个独立开关在更新和重复迁移后都必须保留，避免 rebase 丢失更新列。
+	for _, detailEnabled := range []bool{true, false} {
+		fetched.LogDetailEnabled = detailEnabled
+		fetched.AllowUserQuotaQuery = !detailEnabled
+		require.NoError(t, fetched.Update())
+		require.NoError(t, db.AutoMigrate(&model.Token{}))
+		var reloaded model.Token
+		require.NoError(t, db.First(&reloaded, fetched.Id).Error)
+		assert.Equal(t, detailEnabled, reloaded.LogDetailEnabled)
+		assert.Equal(t, !detailEnabled, reloaded.AllowUserQuotaQuery)
+		assert.Equal(t, longKey, reloaded.Key)
+		assert.Equal(t, 200, reloaded.RemainQuota)
+	}
 }
 
 func TestTokenAutoMigrateUsesVarchar128KeyColumn(t *testing.T) {
