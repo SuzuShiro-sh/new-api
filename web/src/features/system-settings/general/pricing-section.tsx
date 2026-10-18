@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
-import * as z from 'zod'
 
 import {
   Form,
@@ -54,48 +53,7 @@ import { SettingsSection } from '../components/settings-section'
 import { useSettingsForm } from '../hooks/use-settings-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
-
-const createPricingSchema = (t: (key: string) => string) =>
-  z
-    .object({
-      QuotaPerUnit: z.coerce.number().min(0, t('Value must be at least 0')),
-      USDExchangeRate: z.coerce
-        .number()
-        .min(0.0001, t('Exchange rate must be greater than 0')),
-      DisplayInCurrencyEnabled: z.boolean(),
-      DisplayTokenStatEnabled: z.boolean(),
-      general_setting: z.object({
-        quota_display_type: z.enum(['USD', 'CNY', 'TOKENS', 'CUSTOM']),
-        custom_currency_symbol: z.string().max(8).optional(),
-        custom_currency_exchange_rate: z.coerce
-          .number()
-          .min(0.0001, t('Exchange rate must be greater than 0'))
-          .optional(),
-      }),
-    })
-    .superRefine((data, ctx) => {
-      const displayType = data.general_setting.quota_display_type
-
-      if (displayType === 'CUSTOM') {
-        if (!data.general_setting.custom_currency_symbol?.trim()) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['general_setting', 'custom_currency_symbol'],
-            message: t('Custom currency symbol is required'),
-          })
-        }
-
-        if (data.general_setting.custom_currency_exchange_rate == null) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['general_setting', 'custom_currency_exchange_rate'],
-            message: t('Exchange rate is required'),
-          })
-        }
-      }
-    })
-
-type PricingFormValues = z.infer<ReturnType<typeof createPricingSchema>>
+import { createPricingSchema, type PricingFormValues } from './pricing-schema'
 
 type PricingSectionProps = {
   defaultValues: PricingFormValues
@@ -238,9 +196,7 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
                     <FormLabel>
                       {displayType === 'CNY'
                         ? t('CNY per USD')
-                        : displayType === 'USD'
-                          ? t('USD Exchange Rate')
-                          : t('USD Exchange Rate')}
+                        : t('USD Exchange Rate')}
                     </FormLabel>
                     <FormControl>
                       <Input
