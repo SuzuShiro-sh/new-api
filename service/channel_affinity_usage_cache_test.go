@@ -20,7 +20,19 @@ func affinityTestKeys(t *testing.T) (string, string) {
 	return key, key
 }
 
-func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string) *gin.Context {
+func buildChannelAffinityStatsContextForTest(t *testing.T) (*gin.Context, string, string, string) {
+	t.Helper()
+	ruleName, keyFP := affinityTestKeys(t)
+	usingGroup := "default"
+	cache := getChannelAffinityUsageCacheStatsCache()
+	entryKey := channelAffinityUsageCacheEntryKey(ruleName, usingGroup, keyFP)
+	_, err := cache.DeleteMany([]string{entryKey})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := cache.DeleteMany([]string{entryKey})
+		require.NoError(t, err)
+	})
+
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	setChannelAffinityContext(ctx, channelAffinityMeta{
@@ -30,13 +42,11 @@ func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string)
 		UsingGroup:     usingGroup,
 		KeyFingerprint: keyFP,
 	})
-	return ctx
+	return ctx, ruleName, usingGroup, keyFP
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName, keyFP := affinityTestKeys(t)
-	usingGroup := "default"
-	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
+	ctx, ruleName, usingGroup, keyFP := buildChannelAffinityStatsContextForTest(t)
 
 	usage := &dto.Usage{
 		PromptTokens:     100,
@@ -60,9 +70,7 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName, keyFP := affinityTestKeys(t)
-	usingGroup := "default"
-	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
+	ctx, ruleName, usingGroup, keyFP := buildChannelAffinityStatsContextForTest(t)
 
 	openAIUsage := &dto.Usage{
 		PromptTokens: 100,
@@ -89,9 +97,7 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName, keyFP := affinityTestKeys(t)
-	usingGroup := "default"
-	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
+	ctx, ruleName, usingGroup, keyFP := buildChannelAffinityStatsContextForTest(t)
 
 	usage := &dto.Usage{
 		PromptTokens: 100,
