@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, test } from 'vitest'
 
+import type { ApiKey } from '../../types'
+
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { QueryClient, QueryClientProvider } =
@@ -37,6 +39,7 @@ type ApiMethod = (url: string, data?: unknown) => Promise<{ data: unknown }>
 type MockableApi = {
   get: ApiMethod
   post: ApiMethod
+  put: ApiMethod
 }
 type RenderedDrawer = {
   queryClient: InstanceType<typeof QueryClient>
@@ -45,11 +48,17 @@ type RenderedDrawer = {
 const apiClient = api as unknown as MockableApi
 const originalGet = apiClient.get
 const originalPost = apiClient.post
+const originalPut = apiClient.put
 let renderedDrawer: RenderedDrawer | null = null
 
-function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
+function installApiFixtures(
+  createdPayloads: Array<Record<string, unknown>>,
+  currentRow?: ApiKey
+) {
   apiClient.get = async (url) => {
     switch (url) {
+      case `/api/token/${currentRow?.id}`:
+        return { data: { success: true, data: currentRow } }
       case '/api/status':
         return { data: { data: { default_use_auto_group: true } } }
       case '/api/user/models':
@@ -82,9 +91,10 @@ function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
     createdPayloads.push(data as Record<string, unknown>)
     return { data: { success: true, data: {} } }
   }
+  apiClient.put = apiClient.post
 }
 
-async function renderCreateDrawer(): Promise<void> {
+async function renderDrawer(currentRow?: ApiKey): Promise<void> {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -125,7 +135,11 @@ async function renderCreateDrawer(): Promise<void> {
     <QueryClientProvider client={queryClient}>
       <I18nextProvider i18n={i18n}>
         <ApiKeysProvider>
-          <ApiKeysMutateDrawer open onOpenChange={() => undefined} />
+          <ApiKeysMutateDrawer
+            currentRow={currentRow}
+            open
+            onOpenChange={() => undefined}
+          />
         </ApiKeysProvider>
       </I18nextProvider>
     </QueryClientProvider>
@@ -196,6 +210,7 @@ function selectComboboxOption(
 afterEach(() => {
   apiClient.get = originalGet
   apiClient.post = originalPost
+  apiClient.put = originalPut
   localStorage.clear()
   if (renderedDrawer) {
     renderedDrawer.queryClient.clear()
@@ -207,7 +222,7 @@ describe('API keys mutate drawer Auto group integration', () => {
   test('inherits the root Auto order and sends an empty override for every batch-created key', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)
-    await renderCreateDrawer()
+    await renderDrawer()
 
     const groupTrigger = getControlByLabel('Group')
     expect(groupTrigger.textContent?.includes('auto')).toBe(true)
@@ -240,7 +255,7 @@ describe('API keys mutate drawer Auto group integration', () => {
   test('preserves an unsaved custom order and mode after Auto to ordinary to Auto changes', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)
-    await renderCreateDrawer()
+    await renderDrawer()
 
     const autoOrderControl = getControlByLabel('Auto group order')
     const addGroupTrigger = autoOrderControl.querySelector<HTMLButtonElement>(
@@ -283,7 +298,7 @@ describe('API keys mutate drawer user quota query switch', () => {
   test('sends false for a new key after the switch, which starts on, is turned off', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)
-    await renderCreateDrawer()
+    await renderDrawer()
 
     fireEvent.click(findButton('Advanced Settings', true))
     const quotaQuerySwitch = await screen.findByRole('switch', {
@@ -298,4 +313,47 @@ describe('API keys mutate drawer user quota query switch', () => {
     await waitFor(() => expect(createdPayloads).toHaveLength(1))
     expect(createdPayloads[0]?.allow_user_quota_query).toBe(false)
   })
+})
+
+describe('API keys mutate drawer quota editing', () => {
+  test.each([true, false])(
+    'submits the displayed finite quota after editing an unlimited=%s key',
+    async (unlimited) => {
+      const payloads: Array<Record<string, unknown>> = []
+      const currentRow: ApiKey = {
+        id: 1,
+        name: 'quota-edit',
+        key: 'sk-test',
+        status: 1,
+        remain_quota: 500_001,
+        used_quota: 0,
+        unlimited_quota: unlimited,
+        allow_user_quota_query: false,
+        expired_time: -1,
+        created_time: 1,
+        accessed_time: 0,
+        group: 'default',
+        auto_groups: null,
+        cross_group_retry: false,
+        model_limits_enabled: false,
+        model_limits: '',
+        allow_ips: '',
+      }
+      installApiFixtures(payloads, currentRow)
+      await renderDrawer(currentRow)
+      await screen.findByDisplayValue('quota-edit')
+      if (unlimited) {
+        const unlimitedSwitch = screen.getByRole('switch', {
+          name: 'Unlimited Quota',
+        })
+        expect(unlimitedSwitch).toBeChecked()
+        fireEvent.click(unlimitedSwitch)
+        expect(screen.getByRole('spinbutton')).toHaveValue(0)
+      }
+      fireEvent.click(findButton('Save changes', true))
+      await waitFor(() => expect(payloads).toHaveLength(1))
+      expect(payloads[0]?.remain_quota).toBe(unlimited ? 0 : 500_001)
+      expect(payloads[0]?.unlimited_quota).toBe(false)
+    }
+  )
 })
