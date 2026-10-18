@@ -42,6 +42,7 @@ const baseApiKey: ApiKey = {
   remain_quota: 0,
   used_quota: 0,
   unlimited_quota: true,
+  log_detail_enabled: false,
   expired_time: -1,
   created_time: 1,
   accessed_time: 0,

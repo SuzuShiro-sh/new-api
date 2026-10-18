@@ -328,6 +328,7 @@ describe('API keys mutate drawer quota editing', () => {
         remain_quota: 500_001,
         used_quota: 0,
         unlimited_quota: unlimited,
+        log_detail_enabled: false,
         allow_user_quota_query: false,
         expired_time: -1,
         created_time: 1,

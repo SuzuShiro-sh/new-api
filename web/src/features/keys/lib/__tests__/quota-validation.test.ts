@@ -78,6 +78,7 @@ function apiKeyFixture(remainQuota: number): ApiKey {
     remain_quota: remainQuota,
     used_quota: 0,
     unlimited_quota: false,
+    log_detail_enabled: false,
     allow_user_quota_query: false,
     expired_time: -1,
     created_time: 1,

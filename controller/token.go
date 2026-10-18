@@ -37,6 +37,7 @@ type tokenRequest struct {
 	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
 	// 指针区分“未传”和显式 false：新建时未传即开启，更新时未传则保留原值。
 	AllowUserQuotaQuery *bool `json:"allow_user_quota_query"`
+	LogDetailEnabled    *bool `json:"log_detail_enabled"`
 }
 
 type tokenResponse struct {
@@ -362,6 +363,7 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		LogDetailEnabled:   request.LogDetailEnabled != nil && *request.LogDetailEnabled,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
 	err = cleanToken.Insert()
@@ -468,6 +470,9 @@ func UpdateToken(c *gin.Context) {
 			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
 				return
 			}
+		}
+		if request.LogDetailEnabled != nil {
+			cleanToken.LogDetailEnabled = *request.LogDetailEnabled
 		}
 	}
 	err = cleanToken.Update()

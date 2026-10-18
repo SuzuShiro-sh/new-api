@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestValidateOptionValueRejectsInvalidQuotaPerUnit(t *testing.T) {
@@ -22,6 +24,37 @@ func TestValidateOptionValueRejectsInvalidQuotaPerUnit(t *testing.T) {
 	}
 
 	require.NoError(t, validateOptionValue("QuotaPerUnit", "0.5"))
+}
+
+func TestInvalidLogDetailOptionsDoNotPersist(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	previousDB := DB
+	DB = db
+	t.Cleanup(func() { DB = previousDB; require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, db.AutoMigrate(&Option{}))
+	for _, test := range []struct{ key, valid, invalid string }{
+		{"LogDetailEnabled", "true", "invalid"},
+		{"LogDetailRetentionDays", "3", "-1"},
+		{"LogDetailMaxBodyKB", "5120", "5121"},
+	} {
+		t.Run(test.key, func(t *testing.T) {
+			require.NoError(t, db.Create(&Option{Key: test.key, Value: test.valid}).Error)
+			for _, bulk := range []bool{false, true} {
+				if bulk {
+					err = UpdateOptionsBulk(map[string]string{test.key: test.invalid})
+				} else {
+					err = UpdateOption(test.key, test.invalid)
+				}
+				require.Error(t, err)
+				var stored Option
+				require.NoError(t, db.Where("key = ?", test.key).First(&stored).Error)
+				assert.Equal(t, test.valid, stored.Value)
+			}
+		})
+	}
 }
 
 func TestUpdateOptionMapRejectsInvalidQuotaPerUnitWithoutMutation(t *testing.T) {

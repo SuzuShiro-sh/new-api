@@ -86,6 +86,7 @@ export function getApiKeyFormSchema(
       remain_quota_dollars: z.number().finite().optional(),
       expired_time: z.date().optional(),
       unlimited_quota: z.boolean(),
+      log_detail_enabled: z.boolean(),
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       allow_user_quota_query: z.boolean(),
@@ -172,6 +173,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   remain_quota_dollars: 10,
   expired_time: undefined,
   unlimited_quota: true,
+  log_detail_enabled: false,
   model_limits: [],
   allow_ips: '',
   allow_user_quota_query: true,
@@ -239,6 +241,7 @@ export function transformFormDataToPayload(
       ? Math.floor(data.expired_time.getTime() / 1000)
       : -1,
     unlimited_quota: data.unlimited_quota,
+    log_detail_enabled: data.log_detail_enabled,
     model_limits_enabled: data.model_limits.length > 0,
     model_limits: data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
@@ -278,6 +281,7 @@ export function transformApiKeyToFormDefaults(
         ? new Date(apiKey.expired_time * 1000)
         : undefined,
     unlimited_quota: apiKey.unlimited_quota,
+    log_detail_enabled: apiKey.log_detail_enabled ?? false,
     model_limits: apiKey.model_limits
       ? apiKey.model_limits.split(',').filter(Boolean)
       : [],
