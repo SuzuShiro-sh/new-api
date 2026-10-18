@@ -1,7 +1,8 @@
-// 本文件验证通用设置接口对额度换算配置的强边界约束。
+// 本文件验证通用设置接口对日志详情和额度换算配置的强边界约束。
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,6 +35,16 @@ func TestUpdateOptionRejectsInvalidOptionBoundaries(t *testing.T) {
 		body    string
 		message string
 	}{
+		{
+			name:    "negative retention",
+			body:    `{"key":"LogDetailRetentionDays","value":-1}`,
+			message: fmt.Sprintf("Log detail retention days must be between 0 and %d", common.MaxLogDetailRetentionDays),
+		},
+		{
+			name:    "body limit above maximum",
+			body:    `{"key":"LogDetailMaxBodyKB","value":5121}`,
+			message: fmt.Sprintf("Log detail content limit must be between %d and %d KiB", common.MinLogDetailBodyKB, common.MaxLogDetailBodyKB),
+		},
 		{
 			name:    "zero quota per unit",
 			body:    `{"key":"QuotaPerUnit","value":0}`,

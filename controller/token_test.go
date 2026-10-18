@@ -40,10 +40,11 @@ type tokenPageResponse struct {
 }
 
 type tokenResponseItem struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Key    string `json:"key"`
-	Status int    `json:"status"`
+	ID               int    `json:"id"`
+	Name             string `json:"name"`
+	Key              string `json:"key"`
+	Status           int    `json:"status"`
+	LogDetailEnabled bool   `json:"log_detail_enabled"`
 }
 
 type tokenKeyResponse struct {
@@ -401,6 +402,20 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	if fetched.Key != longKey {
 		t.Fatalf("expected long token key %q, got %q", longKey, fetched.Key)
 	}
+
+	// 两个独立开关在更新和重复迁移后都必须保留，避免 rebase 丢失更新列。
+	for _, detailEnabled := range []bool{true, false} {
+		fetched.LogDetailEnabled = detailEnabled
+		fetched.AllowUserQuotaQuery = !detailEnabled
+		require.NoError(t, fetched.Update())
+		require.NoError(t, db.AutoMigrate(&model.Token{}))
+		var reloaded model.Token
+		require.NoError(t, db.First(&reloaded, fetched.Id).Error)
+		assert.Equal(t, detailEnabled, reloaded.LogDetailEnabled)
+		assert.Equal(t, !detailEnabled, reloaded.AllowUserQuotaQuery)
+		assert.Equal(t, longKey, reloaded.Key)
+		assert.Equal(t, 200, reloaded.RemainQuota)
+	}
 }
 
 func TestTokenAutoMigrateUsesVarchar128KeyColumn(t *testing.T) {
@@ -437,6 +452,105 @@ func TestTokenMigrationFromChar48ToVarchar128Postgres(t *testing.T) {
 
 	db, managedTokensTable := openTokenControllerExternalDB(t, "postgres", dsn)
 	runTokenMigrationCompatibilityTest(t, db, "postgres", managedTokensTable)
+}
+
+// TestAddTokenDisablesLogDetailByDefault 验证新令牌在未指定时默认不记录详情.
+func TestAddTokenDisablesLogDetailByDefault(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	body := map[string]any{
+		"name":                 "default-detail-setting",
+		"expired_time":         -1,
+		"remain_quota":         0,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+	var stored model.Token
+	require.NoError(t, db.Where("name = ?", "default-detail-setting").First(&stored).Error)
+	assert.False(t, stored.LogDetailEnabled)
+}
+
+// TestUpdateTokenPersistsLogDetailEnabled 验证令牌编辑接口可以显式开启详情记录.
+func TestUpdateTokenPersistsLogDetailEnabled(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	token := seedToken(t, db, 1, "detail-setting-token", "detail1234token5678")
+	body := map[string]any{
+		"id":                   token.Id,
+		"name":                 token.Name,
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+		"log_detail_enabled":   true,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+	UpdateToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+	var detail tokenResponseItem
+	require.NoError(t, common.Unmarshal(response.Data, &detail))
+	assert.True(t, detail.LogDetailEnabled)
+	var stored model.Token
+	require.NoError(t, db.First(&stored, token.Id).Error)
+	assert.True(t, stored.LogDetailEnabled)
+}
+
+func TestUpdateTokenPreservesOrDisablesLogDetailFromFieldPresence(t *testing.T) {
+	tests := []struct {
+		name         string
+		includeField bool
+		wantEnabled  bool
+	}{
+		{name: "omitted field preserves existing opt in", wantEnabled: true},
+		{name: "explicit false disables opt in", includeField: true, wantEnabled: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := setupTokenControllerTestDB(t)
+			token := seedToken(t, db, 1, "detail-setting-token", "detail1234token5678")
+			require.NoError(t, db.Model(token).Update("log_detail_enabled", true).Error)
+			body := map[string]any{
+				"id":                   token.Id,
+				"name":                 token.Name,
+				"expired_time":         -1,
+				"remain_quota":         100,
+				"unlimited_quota":      true,
+				"model_limits_enabled": false,
+				"model_limits":         "",
+				"group":                "default",
+				"cross_group_retry":    false,
+			}
+			if test.includeField {
+				body["log_detail_enabled"] = false
+			}
+
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+			UpdateToken(ctx)
+
+			response := decodeAPIResponse(t, recorder)
+			require.True(t, response.Success, response.Message)
+			var responseToken tokenResponseItem
+			require.NoError(t, common.Unmarshal(response.Data, &responseToken))
+			assert.Equal(t, test.wantEnabled, responseToken.LogDetailEnabled)
+			var stored model.Token
+			require.NoError(t, db.First(&stored, token.Id).Error)
+			assert.Equal(t, test.wantEnabled, stored.LogDetailEnabled)
+		})
+	}
 }
 
 func TestGetAllTokensMasksKeyInResponse(t *testing.T) {

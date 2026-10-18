@@ -16,6 +16,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -24,8 +25,10 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestRelayKeepAliveDuringImagePreparation(t *testing.T) {
@@ -299,6 +302,53 @@ func TestRelayStreamErrorAfterKeepAlive(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRelayStreamFailurePersistsLogDetailAfterKeepAlive(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(&model.Log{}, &model.LogDetail{}))
+
+	previousLogDB := model.LOG_DB
+	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousConsume, previousDetail := common.LogConsumeEnabled, common.LogDetailEnabled
+	previousCount, previousMedia := constant.CountToken, constant.GetMediaToken
+	model.LOG_DB = database
+	common.SetDatabaseTypes(previousMainType, common.DatabaseTypeSQLite)
+	common.LogConsumeEnabled, common.LogDetailEnabled = true, true
+	constant.CountToken, constant.GetMediaToken = true, true
+	t.Cleanup(func() {
+		model.LOG_DB = previousLogDB
+		common.SetDatabaseTypes(previousMainType, previousLogType)
+		common.LogConsumeEnabled, common.LogDetailEnabled = previousConsume, previousDetail
+		constant.CountToken, constant.GetMediaToken = previousCount, previousMedia
+	})
+
+	const requestID = "stream-failure-detail"
+	require.NoError(t, database.Create(&model.Log{RequestId: requestID, UserId: 7, Type: model.LogTypeError}).Error)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-20250514","max_tokens":16,"stream":true,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"!"}}]}]}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(common.RequestIdKey, requestID)
+	c.Set("id", 7)
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "claude-sonnet-4-20250514")
+	common.SetContextKey(c, constant.ContextKeyTokenLogDetailEnabled, true)
+	helper.SetEventStreamHeaders(c)
+	require.NoError(t, helper.PingData(c))
+
+	Relay(c, types.RelayFormatClaude)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "event: error\n")
+	detail, err := model.GetLogDetailByRequestId(requestID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, detail.ErrorBody)
+	assert.Contains(t, string(detail.ResponseBody), "error")
 }
 
 func TestStreamKeepAliveCancellation(t *testing.T) {
