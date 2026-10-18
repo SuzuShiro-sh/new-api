@@ -11,6 +11,16 @@ import (
 
 func validateOptionBoundary(key string, value string) error {
 	switch key {
+	case "LogDetailRetentionDays":
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 || parsed > common.MaxLogDetailRetentionDays {
+			return common.NewMessage("Log detail retention days must be between {{min}} and {{max}}", map[string]any{"min": 0, "max": common.MaxLogDetailRetentionDays})
+		}
+	case "LogDetailMaxBodyKB":
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < common.MinLogDetailBodyKB || parsed > common.MaxLogDetailBodyKB {
+			return common.NewMessage("Log detail content limit must be between {{min}} and {{max}} KiB", map[string]any{"min": common.MinLogDetailBodyKB, "max": common.MaxLogDetailBodyKB})
+		}
 	case "QuotaPerUnit":
 		parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {

@@ -20,6 +20,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import {
   ChevronDown,
+  FileSearch,
   KeyRound,
   Settings2,
   WalletCards,
@@ -691,6 +692,41 @@ export function ApiKeysMutateDrawer({
                       </FormLabel>
                       <FormDescription className='text-xs'>
                         {t('Enable unlimited quota for this API key')}
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </SideDrawerSection>
+
+            <SideDrawerSection>
+              <SideDrawerSectionHeader
+                title={t('Request detail logging')}
+                description={t(
+                  'Choose whether this API key stores request and response details.'
+                )}
+                icon={<FileSearch className='size-4' />}
+                iconTone='warning'
+              />
+              <FormField
+                control={form.control}
+                name='log_detail_enabled'
+                render={({ field }) => (
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <div className='flex min-w-0 flex-col gap-0.5'>
+                      <FormLabel className='text-sm'>
+                        {t('Record request and response details')}
+                      </FormLabel>
+                      <FormDescription className='text-xs'>
+                        {t(
+                          'Disabled by default. The global detail logging settings and retention policy still apply.'
+                        )}
                       </FormDescription>
                     </div>
                     <FormControl>

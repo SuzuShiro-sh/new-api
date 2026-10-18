@@ -397,6 +397,9 @@ it.each([
     const { post, put } = await renderKeysPage(status)
     const user = userEvent.setup()
     const button = screen.getByRole('button', { name: action })
+    const statusColumnIndex = screen
+      .getAllByRole('columnheader')
+      .indexOf(screen.getByRole('columnheader', { name: 'Status' }))
     act(() => button.focus())
     await user.keyboard('{Enter}')
     await waitFor(() =>
@@ -405,7 +408,11 @@ it.each([
         status: nextStatus,
       })
     )
-    await screen.findByText(nextLabel)
+    await waitFor(() =>
+      expect(button.closest('tr')?.cells[statusColumnIndex]).toHaveTextContent(
+        nextLabel
+      )
+    )
     expect(post).not.toHaveBeenCalled()
   }
 )
