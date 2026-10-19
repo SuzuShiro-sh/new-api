@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"bufio"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -22,10 +24,72 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestLogDetailResponsesWebSocketArchive(t *testing.T) {
+	oldEnabled, oldFull := common.LogDetailEnabled, common.LogDetailFullCaptureEnabled
+	common.LogDetailEnabled, common.LogDetailFullCaptureEnabled = true, true
+	t.Cleanup(func() { common.LogDetailEnabled, common.LogDetailFullCaptureEnabled = oldEnabled, oldFull })
+	terminal := `{"type":"response.completed","response":{"id":"archive-response","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
+	fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(ws *websocket.Conn, _ *http.Request) {
+		_, _, err := ws.ReadMessage()
+		if !assert.NoError(t, err) {
+			return
+		}
+		assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(terminal)))
+		_, _, _ = ws.ReadMessage()
+	})
+	require.NoError(t, model.LOG_DB.AutoMigrate(&model.LogDetail{}, &model.LogDetailArchiveChunk{}))
+	require.NoError(t, model.DB.Model(fixture.token).Update("log_detail_enabled", true).Error)
+	require.NoError(t, model.InvalidateUserTokensCache(fixture.user.Id))
+	original := `{"type":"response.create","model":"ws-billing","input":"preserve 9007199254740993"}`
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(original)))
+	_, received, err := fixture.client.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, terminal, string(received))
+	fixture.closeAndWait(t)
+	var detail model.LogDetail
+	require.NoError(t, model.LOG_DB.Where("user_id = ?", fixture.user.Id).First(&detail).Error)
+	assert.True(t, detail.ArchiveComplete)
+	exported := httptest.NewRecorder()
+	exportContext, _ := gin.CreateTestContext(exported)
+	exportContext.Request = httptest.NewRequest(http.MethodGet, "/api/log/detail/"+detail.RequestId+"?format=archive", nil)
+	exportContext.Params = gin.Params{{Key: "request_id", Value: detail.RequestId}}
+	GetLogDetail(exportContext)
+	require.Equal(t, "application/gzip", exported.Header().Get("Content-Type"))
+	assert.EqualValues(t, detail.ArchiveBytes, exported.Body.Len())
+	reader, err := gzip.NewReader(exported.Body)
+	require.NoError(t, err)
+	defer reader.Close()
+	byStage := map[string]string{}
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		var event struct {
+			Stage string `json:"stage"`
+			Data  []byte `json:"data_base64"`
+		}
+		require.NoError(t, common.Unmarshal(scanner.Bytes(), &event))
+		byStage[event.Stage] += string(event.Data)
+	}
+	require.NoError(t, scanner.Err())
+	assert.Equal(t, original, byStage["client_websocket_message"])
+	assert.Equal(t, terminal, byStage["upstream_websocket_message"])
+	assert.Equal(t, terminal, byStage["client_websocket_send"])
+	assert.Contains(t, byStage["upstream_websocket_send"], "gpt-4o")
+	// 分块缺失时应返回可识别的 API 错误，不能先发送 gzip 头再返回半个文件。
+	require.NoError(t, model.LOG_DB.Where("request_id = ? AND ordinal = 0", detail.RequestId).Delete(&model.LogDetailArchiveChunk{}).Error)
+	missing := httptest.NewRecorder()
+	missingContext, _ := gin.CreateTestContext(missing)
+	missingContext.Request = exportContext.Request.Clone(context.Background())
+	missingContext.Params = exportContext.Params
+	GetLogDetail(missingContext)
+	assert.Contains(t, missing.Header().Get("Content-Type"), "application/json")
+	assert.Contains(t, missing.Body.String(), `"success":false`)
+}
 
 func TestServeTaskPluginProtocolWaitsForDurableSubmissionBeforeWriting(t *testing.T) {
 	pinned := compilePluginProtocolTestEndpoint(t, "durable-barrier", `
@@ -1680,7 +1744,7 @@ func TestServeTaskPluginImageProtocolRendersImmediateResultAndInlinesBase64(t *t
 			c, recorder := newImageProtocolTestContext(tc.responseFormat)
 			deps := pluginProtocolTestDeps()
 			downloads := 0
-			deps.downloadImage = func(url string) (string, string, error) {
+			deps.downloadImage = func(_ context.Context, url string) (string, string, error) {
 				downloads++
 				if tc.downloadErr != nil {
 					return "", "", tc.downloadErr
@@ -1866,4 +1930,64 @@ func TestServeTaskPluginImageProtocolDisconnectDuringSubmissionKeepsDurableSettl
 	assert.Zero(t, polls, "an immediate result is never polled")
 	assert.False(t, c.Writer.Written())
 	assert.Empty(t, recorder.Body.String())
+}
+
+func TestPluginProtocolsHonorLogDetailOptIn(t *testing.T) {
+	oldDB, oldLogDB := model.DB, model.LOG_DB
+	oldConsume, oldDetail, oldFull := common.LogConsumeEnabled, common.LogDetailEnabled, common.LogDetailFullCaptureEnabled
+	oldMainType, oldLogType := common.MainDatabaseType(), common.LogDatabaseType()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	model.DB, model.LOG_DB = db, db
+	common.LogConsumeEnabled, common.LogDetailEnabled, common.LogDetailFullCaptureEnabled = true, true, true
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = oldDB, oldLogDB
+		common.LogConsumeEnabled, common.LogDetailEnabled, common.LogDetailFullCaptureEnabled = oldConsume, oldDetail, oldFull
+		common.SetDatabaseTypes(oldMainType, oldLogType)
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.LogDetail{}, &model.LogDetailArchiveChunk{}))
+	for _, protocol := range []string{"openai_image", "openai_responses"} {
+		t.Run(protocol, func(t *testing.T) {
+			var c *gin.Context
+			var recorder *httptest.ResponseRecorder
+			var pinned pluginruntime.PinnedEndpoint
+			if protocol == "openai_image" {
+				c, recorder = newImageProtocolTestContext("")
+				pinned = imageProtocolTestEndpoint(t)
+			} else {
+				c, recorder = newPluginProtocolTestContext(false, false)
+				setProtocolRequestBackground(c, true)
+				pinned = compilePluginProtocolTestEndpoint(t, "capture-review", `export const protocols = {openai_responses: {renderFinal: function() { return {}; }}};`)
+			}
+			c.Request.Header.Set("Content-Type", "application/json")
+			requestID := "capture_review_" + protocol
+			c.Set(common.RequestIdKey, requestID)
+			common.SetContextKey(c, constant.ContextKeyTokenLogDetailEnabled, true)
+			deps := pluginProtocolTestDeps()
+			deps.submit = func(_ *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				require.NoError(t, db.Create(&model.Log{RequestId: requestID, UserId: info.UserId, Type: model.LogTypeConsume}).Error)
+				if protocol == "openai_image" {
+					return imageProtocolTestOutcome(info, model.TaskStatusSuccess, "https://cdn.example/test.png"), nil
+				}
+				return pluginProtocolTestOutcome(info, pinned.Plugin.Meta.Key, "task_background", nil), nil
+			}
+			if protocol == "openai_image" {
+				serveTaskPluginImageProtocol(c, pinned, deps)
+			} else {
+				serveTaskPluginProtocol(c, pinned, deps)
+			}
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			detail, err := model.GetLogDetailByRequestId(requestID)
+			require.NoError(t, err)
+			assert.Positive(t, detail.ArchiveBytes)
+			var detailCount int64
+			require.NoError(t, db.Model(&model.LogDetail{}).Where("request_id = ?", requestID).Count(&detailCount).Error)
+			assert.Equal(t, int64(1), detailCount, "enabled detail capture must persist the successful request and response")
+		})
+	}
 }

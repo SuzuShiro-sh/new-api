@@ -3,14 +3,20 @@ package model
 
 import (
 	"context"
+	"slices"
 
 	"gorm.io/gorm"
 )
 
 func deleteOldLogBatchWithDetails(ctx context.Context, targetTimestamp int64, limit int) (int64, error) {
-	hasDetails := LOG_DB.Migrator().HasTable(&LogDetail{})
+	tables, err := LOG_DB.WithContext(ctx).Migrator().GetTables()
+	if err != nil {
+		return 0, err
+	}
+	hasDetails := slices.Contains(tables, "log_details")
+	hasArchive := slices.Contains(tables, "log_detail_archive_chunks")
 	var deleted int64
-	err := LOG_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = LOG_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 与详情写入保持相同的锁顺序：先锁普通日志，再操作详情。
 		// 否则删除详情后仍可能有并发请求写入，留下普通日志已删除的孤立正文。
 		var logs []Log
@@ -38,6 +44,11 @@ func deleteOldLogBatchWithDetails(ctx context.Context, targetTimestamp int64, li
 		if hasDetails && len(requestIDs) > 0 {
 			// 重试会产生共用请求 ID 的多条日志，最后一条关联日志删除后才清理正文。
 			remaining := tx.Model(&Log{}).Select("request_id").Where("request_id IN ?", requestIDs)
+			if hasArchive {
+				if err := tx.Where("request_id IN ?", requestIDs).Where("request_id NOT IN (?)", remaining).Delete(&LogDetailArchiveChunk{}).Error; err != nil {
+					return err
+				}
+			}
 			return tx.Where("request_id IN ?", requestIDs).
 				Where("request_id NOT IN (?)", remaining).Delete(&LogDetail{}).Error
 		}

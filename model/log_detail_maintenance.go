@@ -78,11 +78,23 @@ func DeleteExpiredLogDetailsBatch(ctx context.Context, targetTimestamp int64, li
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := LOG_DB.WithContext(ctx).Where("id IN ?", ids).Delete(&LogDetail{})
-	if result.Error != nil {
-		return 0, result.Error
+	hasArchive, err := hasLogDetailArchiveTable(LOG_DB.WithContext(ctx))
+	if err != nil {
+		return 0, err
 	}
-	return result.RowsAffected, nil
+	var deleted int64
+	err = LOG_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if hasArchive {
+			requests := tx.Model(&LogDetail{}).Select("request_id").Where("id IN ?", ids)
+			if err := tx.Where("request_id IN (?)", requests).Delete(&LogDetailArchiveChunk{}).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Where("id IN ?", ids).Delete(&LogDetail{})
+		deleted = result.RowsAffected
+		return result.Error
+	})
+	return deleted, err
 }
 
 // ClearAllLogDetailsAndReclaim 删除全部详情，并独立报告空间回收是否成功。
@@ -95,13 +107,24 @@ func ClearAllLogDetailsAndReclaim(ctx context.Context) (LogDetailClearResult, er
 		return result, err
 	}
 
-	deleted := LOG_DB.WithContext(ctx).
-		Session(&gorm.Session{AllowGlobalUpdate: true}).
-		Delete(&LogDetail{})
-	if deleted.Error != nil {
-		return result, fmt.Errorf("failed to clear log detail table: %w", deleted.Error)
+	hasArchive, err := hasLogDetailArchiveTable(LOG_DB.WithContext(ctx))
+	if err != nil {
+		return result, err
 	}
-	result.DeletedCount = deleted.RowsAffected
+	err = LOG_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		tx = tx.Session(&gorm.Session{AllowGlobalUpdate: true})
+		if hasArchive {
+			if err := tx.Delete(&LogDetailArchiveChunk{}).Error; err != nil {
+				return err
+			}
+		}
+		deleted := tx.Delete(&LogDetail{})
+		result.DeletedCount = deleted.RowsAffected
+		return deleted.Error
+	})
+	if err != nil {
+		return result, fmt.Errorf("failed to clear log detail table: %w", err)
+	}
 
 	if err := ReclaimLogDetailStorage(ctx); err != nil {
 		return result, fmt.Errorf("log details were cleared but storage reclaim failed: %w", err)
@@ -120,6 +143,10 @@ func ReclaimLogDetailStorage(ctx context.Context) error {
 	}
 
 	db := LOG_DB.WithContext(ctx)
+	hasArchive, err := hasLogDetailArchiveTable(db)
+	if err != nil {
+		return err
+	}
 	switch LOG_DB.Dialector.Name() {
 	case "sqlite":
 		if err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error; err != nil {
@@ -136,6 +163,15 @@ func ReclaimLogDetailStorage(ctx context.Context) error {
 		if err := validateMySQLTableMaintenanceResults(results); err != nil {
 			return fmt.Errorf("failed to optimize MySQL log detail table: %w", err)
 		}
+		if hasArchive {
+			results = nil
+			if err := db.Raw("OPTIMIZE TABLE `log_detail_archive_chunks`").Scan(&results).Error; err != nil {
+				return err
+			}
+			if err := validateMySQLTableMaintenanceResults(results); err != nil {
+				return err
+			}
+		}
 	case "postgres":
 		sqlDB, err := LOG_DB.DB()
 		if err != nil {
@@ -148,6 +184,11 @@ func ReclaimLogDetailStorage(ctx context.Context) error {
 		defer conn.Close()
 		if _, err = conn.ExecContext(ctx, `VACUUM (FULL, ANALYZE) "log_details"`); err != nil {
 			return fmt.Errorf("failed to vacuum PostgreSQL log detail table: %w", err)
+		}
+		if hasArchive {
+			if _, err = conn.ExecContext(ctx, `VACUUM (FULL, ANALYZE) "log_detail_archive_chunks"`); err != nil {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("unsupported log database dialect: %s", LOG_DB.Dialector.Name())

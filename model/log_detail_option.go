@@ -9,6 +9,7 @@ import (
 
 func initLogDetailOptions() {
 	common.OptionMap["LogDetailEnabled"] = strconv.FormatBool(common.LogDetailEnabled)
+	common.OptionMap["LogDetailFullCaptureEnabled"] = strconv.FormatBool(common.LogDetailFullCaptureEnabled)
 	common.OptionMap["LogDetailRetentionDays"] = strconv.Itoa(common.LogDetailRetentionDays)
 	common.OptionMap["LogDetailMaxBodyKB"] = strconv.Itoa(common.LogDetailMaxBodyKB)
 }
@@ -18,6 +19,10 @@ func updateLogDetailOption(key string, value string) (bool, error) {
 		return true, err
 	}
 	switch key {
+	case "LogDetailFullCaptureEnabled":
+		parsed, _ := strconv.ParseBool(value)
+		common.LogDetailFullCaptureEnabled = parsed
+		return true, nil
 	case "LogDetailEnabled":
 		parsed, _ := strconv.ParseBool(value)
 		common.LogDetailEnabled = parsed
@@ -38,7 +43,7 @@ func updateLogDetailOption(key string, value string) (bool, error) {
 // validateLogDetailOption 在写入数据库之前校验，避免失败的设置请求留下无效持久化值。
 func validateLogDetailOption(key, value string) error {
 	switch key {
-	case "LogDetailEnabled":
+	case "LogDetailEnabled", "LogDetailFullCaptureEnabled":
 		if _, err := strconv.ParseBool(value); err != nil {
 			return common.NewMessage("Log detail logging must be a boolean")
 		}

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -34,8 +35,11 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	usage := &dto.RealtimeUsage{}
 	localUsage := &dto.RealtimeUsage{}
 	sumUsage := &dto.RealtimeUsage{}
+	var readers sync.WaitGroup
+	readers.Add(2)
 
 	gopool.Go(func() {
+		defer readers.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				errChan <- fmt.Errorf("panic in client reader: %v", r)
@@ -46,7 +50,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 			case <-c.Done():
 				return
 			default:
-				_, message, err := clientConn.ReadMessage()
+				messageType, message, err := clientConn.ReadMessage()
 				if err != nil {
 					if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 						errChan <- fmt.Errorf("error reading from client: %v", err)
@@ -55,6 +59,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 					return
 				}
 
+				service.RecordLogDetailWebSocket(c, "client_websocket_message", messageType, message)
 				realtimeEvent := &dto.RealtimeEvent{}
 				err = common.Unmarshal(message, realtimeEvent)
 				if err != nil {
@@ -96,6 +101,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	})
 
 	gopool.Go(func() {
+		defer readers.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				errChan <- fmt.Errorf("panic in target reader: %v", r)
@@ -106,7 +112,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 			case <-c.Done():
 				return
 			default:
-				_, message, err := targetConn.ReadMessage()
+				messageType, message, err := targetConn.ReadMessage()
 				if err != nil {
 					if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 						errChan <- fmt.Errorf("error reading from target: %v", err)
@@ -115,6 +121,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 					return
 				}
 				info.SetFirstResponseTime()
+				service.RecordLogDetailWebSocket(c, "upstream_websocket_message", messageType, message)
 				realtimeEvent := &dto.RealtimeEvent{}
 				err = common.Unmarshal(message, realtimeEvent)
 				if err != nil {
@@ -205,10 +212,16 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	case <-clientClosed:
 	case <-targetClosed:
 	case err := <-errChan:
+		service.RecordLogDetailWebSocketError(c, err)
 		//return service.OpenAIErrorWrapper(err, "realtime_error", http.StatusInternalServerError), nil
 		logger.LogError(c, common.LogText("realtime error: %s", err.Error()))
 	case <-c.Done():
+		service.RecordLogDetailWebSocketError(c, c.Err())
 	}
+	// 关闭连接唤醒另一个 ReadMessage，等最后一条消息完成采集后才结算并返回。
+	_ = clientConn.Close()
+	_ = targetConn.Close()
+	readers.Wait()
 
 	if usage.TotalTokens != 0 {
 		_ = preConsumeUsage(c, info, usage, sumUsage)

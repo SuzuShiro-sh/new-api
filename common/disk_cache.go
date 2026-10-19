@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,8 +14,9 @@ import (
 type DiskCacheType string
 
 const (
-	DiskCacheTypeBody DiskCacheType = "body" // 请求体缓存
-	DiskCacheTypeFile DiskCacheType = "file" // 文件数据缓存
+	DiskCacheTypeBody      DiskCacheType = "body"       // 请求体缓存
+	DiskCacheTypeFile      DiskCacheType = "file"       // 文件数据缓存
+	DiskCacheTypeLogDetail DiskCacheType = "log-detail" // 调试归档，不计入中继正文缓存统计
 )
 
 // 统一的缓存目录名
@@ -129,7 +131,7 @@ func CleanupOldDiskCacheFiles(maxAge time.Duration) error {
 		if now.Sub(info.ModTime()) > maxAge {
 			// 注意：后台清理任务删除文件时，由于无法得知原始 base64Size，
 			// 只能按磁盘文件大小扣减。这在目前 base64 存储模式下是准确的。
-			if err := os.Remove(filepath.Join(dir, entry.Name())); err == nil {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err == nil && !strings.HasPrefix(entry.Name(), string(DiskCacheTypeLogDetail)+"-") {
 				DecrementDiskFiles(info.Size())
 			}
 		}

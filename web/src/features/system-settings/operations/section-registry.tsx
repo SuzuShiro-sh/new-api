@@ -120,6 +120,8 @@ const OPERATIONS_SECTIONS = [
       <LogDetailSettingsSection
         defaultValues={{
           LogDetailEnabled: Boolean(settings.LogDetailEnabled),
+          LogDetailFullCaptureEnabled:
+            settings.LogDetailFullCaptureEnabled ?? false,
           LogDetailRetentionDays: settings.LogDetailRetentionDays,
           LogDetailMaxBodyKB: settings.LogDetailMaxBodyKB,
         }}

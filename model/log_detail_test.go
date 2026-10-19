@@ -2,8 +2,11 @@
 package model
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,7 +133,9 @@ func TestLogDetailDatabaseMatrix(t *testing.T) {
 						}).Error)
 						require.NoError(t, db.Create(&Log{RequestId: "legacy", UserId: 7, CreatedAt: 10, Type: LogTypeConsume}).Error)
 						require.NoError(t, db.AutoMigrate(&LogDetail{}))
-						require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Create(&LogDetail{
+						require.NoError(t, db.Migrator().DropColumn(&LogDetail{}, "ArchiveBytes"))
+						require.NoError(t, db.Migrator().DropColumn(&LogDetail{}, "ArchiveComplete"))
+						require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Omit("archive_bytes", "archive_complete").Create(&LogDetail{
 							RequestId: "legacy", UserId: 7, CreatedAt: 10, RequestBody: "旧请求", ResponseBody: "旧响应",
 						}).Error)
 					}
@@ -164,12 +169,22 @@ func TestLogDetailDatabaseMatrix(t *testing.T) {
 						for _, body := range []string{"initial", strings.Repeat("中文正文", 20000)} {
 							saved, err := SaveLogDetailIfLogExists(context.Background(), &LogDetail{
 								RequestId: requestID, UserId: 7, CreatedAt: createdAt, RequestBody: LogDetailLargeText(body),
+								Archive: strings.NewReader(body), ArchiveComplete: true,
 							})
 							require.NoError(t, err)
 							require.True(t, saved)
 							loaded, err := GetAccessibleLogDetailByRequestId(requestID, 7, false)
 							require.NoError(t, err)
 							assert.Equal(t, body, string(loaded.RequestBody))
+							assert.True(t, loaded.ArchiveComplete)
+							var archive bytes.Buffer
+							require.NoError(t, WriteLogDetailArchive(context.Background(), requestID, loaded.ArchiveBytes, &archive))
+							reader, err := gzip.NewReader(&archive)
+							require.NoError(t, err)
+							decoded, err := io.ReadAll(reader)
+							require.NoError(t, err)
+							require.NoError(t, reader.Close())
+							assert.Equal(t, body, string(decoded))
 						}
 						_, err := GetAccessibleLogDetailByRequestId(requestID, 8, false)
 						assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
@@ -182,6 +197,9 @@ func TestLogDetailDatabaseMatrix(t *testing.T) {
 					cleared, err := ClearAllLogDetailsAndReclaim(context.Background())
 					require.NoError(t, err)
 					assert.True(t, cleared.SpaceReclaimed)
+					var chunks int64
+					require.NoError(t, db.Model(&LogDetailArchiveChunk{}).Count(&chunks).Error)
+					assert.Zero(t, chunks)
 					var logs int64
 					require.NoError(t, db.Model(&Log{}).Count(&logs).Error)
 					assert.GreaterOrEqual(t, logs, int64(1))

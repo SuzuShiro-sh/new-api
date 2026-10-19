@@ -46,7 +46,7 @@ type pluginProtocolBridgeDeps struct {
 	// inside the request, and b64_json responses download each image URL.
 	imagePollInterval time.Duration
 	pollTask          func(context.Context, *model.Task) error
-	downloadImage     func(url string) (mimeType string, base64Data string, err error)
+	downloadImage     func(context.Context, string) (mimeType string, base64Data string, err error)
 }
 
 // taskPluginImagePollInterval paces the in-request polling of asynchronous
@@ -90,7 +90,7 @@ func defaultPluginProtocolBridgeDeps() pluginProtocolBridgeDeps {
 		resolvePlugin:      resolveTaskPluginForProtocolRetrieve,
 		imagePollInterval:  taskPluginImagePollInterval,
 		pollTask:           pollTaskPluginImageTask,
-		downloadImage:      service.GetImageFromUrl,
+		downloadImage:      service.GetImageFromURLWithContext,
 	}
 }
 
@@ -248,6 +248,9 @@ func serveTaskPluginProtocol(
 	var outcome *taskSubmissionOutcome
 	var taskErr *dto.TaskError
 	var relayInfoErr error
+	defer func() {
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
+	}()
 	submissionStage := "relay_info"
 	// A Responses client only observes an asynchronous task. Once admitted,
 	// disconnecting that observer must not cancel submission, persistence, or
@@ -270,6 +273,8 @@ func serveTaskPluginProtocol(
 		relayInfo.RelayMode = relayconstant.RelayModeVideoSubmit
 		relayInfo.IsStream = false
 		relayInfo.OriginModelName = c.GetString("resolved_task_model")
+		service.CaptureRelayRequestDetail(c, relayInfo)
+		clientRequest = service.AttachLogDetailRequestContext(c, clientRequest)
 		if action := c.GetString("task_action"); action != "" {
 			relayInfo.Action = action
 		}

@@ -2,13 +2,20 @@
 package service
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -16,10 +23,229 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLogDetailArchiveCapturesTransportReplay(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if calls.Add(1) == 2 {
+			connection, _, err := w.(http.Hijacker).Hijack()
+			require.NoError(t, err)
+			require.NoError(t, connection.Close())
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	client := newRelayHTTPClient(server.Client().Transport)
+	response, err := client.Get(server.URL)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader("original"))
+	archive := startLogDetailArchive(c)
+	defer archive.cleanup()
+	defer common.CleanupBodyStorage(c)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, server.URL, strings.NewReader("replayed-body"))
+	require.NoError(t, err)
+	req.Header.Set("Idempotency-Key", "replay-test")
+	response, err = client.Do(req)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	reader, complete, err := archive.finish(nil, 200)
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Equal(t, int32(3), calls.Load())
+	readerScan := bufio.NewScanner(reader)
+	bodies := map[int64]string{}
+	for readerScan.Scan() {
+		var event logDetailArchiveEvent
+		require.NoError(t, common.Unmarshal(readerScan.Bytes(), &event))
+		if event.Stage == "upstream_request_body" {
+			bodies[event.Replay] += string(event.Data)
+		}
+	}
+	require.NoError(t, readerScan.Err())
+	assert.Equal(t, map[int64]string{0: "replayed-body", 1: "replayed-body"}, bodies)
+}
+
+func TestLogDetailArchiveMarksUnfinishedBodyIncomplete(t *testing.T) {
+	for _, closeBody := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%t", closeBody), func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+			archive := startLogDetailArchive(c)
+			defer archive.cleanup()
+			defer common.CleanupBodyStorage(c)
+			body := archive.body(io.NopCloser(strings.NewReader("unfinished")), "upstream_response_body", 1, 0, -1)
+			if closeBody {
+				require.NoError(t, body.Close())
+			}
+			_, complete, err := archive.finish(nil, 200)
+			require.NoError(t, err)
+			assert.False(t, complete)
+		})
+	}
+}
+
+func BenchmarkLogDetailArchive(b *testing.B) {
+	for _, size := range []int{1 << 20, 32 << 20} {
+		b.Run(fmt.Sprintf("%dMiB", size>>20), func(b *testing.B) {
+			chunk := bytes.Repeat([]byte{0, 255, 127, 3}, 8192)
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				_, file, err := common.CreateDiskCacheFile(common.DiskCacheTypeLogDetail)
+				require.NoError(b, err)
+				archive := &logDetailArchive{file: file, writer: bufio.NewWriterSize(file, 32*1024)}
+				for range size / len(chunk) {
+					archive.record(logDetailArchiveEvent{Stage: "upstream_response_body", Data: chunk})
+				}
+				_, complete, err := archive.finish(nil, 200)
+				require.NoError(b, err)
+				require.True(b, complete)
+				archive.cleanup()
+			}
+		})
+	}
+}
+
+func TestLogDetailWriterPreservesWriteDeadline(t *testing.T) {
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		c.Writer = &LogDetailResponseWriter{ResponseWriter: c.Writer}
+		err := http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(time.Minute))
+		if err != nil {
+			c.String(500, "%v", err)
+			return
+		}
+		c.Status(http.StatusOK)
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+	response, err := server.Client().Get(server.URL)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+}
+
+func TestLogDetailClientJSONErrorUsesClientContentType(t *testing.T) {
+	truncate(t)
+	require.NoError(t, model.LOG_DB.Create(&model.Log{RequestId: "client-json-error", UserId: 1}).Error)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	c.Set(common.RequestIdKey, "client-json-error")
+	common.SetContextKey(c, constant.ContextKeyTokenLogDetailEnabled, true)
+	info := &relaycommon.RelayInfo{RequestId: "client-json-error", UserId: 1}
+	CaptureRelayRequestDetail(c, info)
+	defer common.CleanupBodyStorage(c)
+	resp := WrapLogDetailResponse(c, &http.Response{StatusCode: 502, Header: http.Header{"Content-Type": {"application/octet-stream"}}, Body: io.NopCloser(strings.NewReader("upstream error"))})
+	_, err := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	c.JSON(502, gin.H{"error": "failed"})
+	FlushCapturedLogDetailResponse(c, info, 502)
+	detail, err := model.GetLogDetailByRequestId(info.RequestId)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"error":"failed"}`, string(detail.ResponseBody))
+}
+
+func TestLogDetailArchiveRetainsBinaryMultipartRetriesAndClientStream(t *testing.T) {
+	truncate(t)
+	require.NoError(t, model.LOG_DB.AutoMigrate(&model.LogDetailArchiveChunk{}))
+	previous := common.LogDetailFullCaptureEnabled
+	common.LogDetailFullCaptureEnabled = true
+	t.Cleanup(func() { common.LogDetailFullCaptureEnabled = previous })
+	var request bytes.Buffer
+	multipartWriter := multipart.NewWriter(&request)
+	part, err := multipartWriter.CreateFormFile("image", "pixel.bin")
+	require.NoError(t, err)
+	image := bytes.Repeat([]byte{0, 255, 1, 128}, 100_000)
+	_, err = part.Write(image)
+	require.NoError(t, err)
+	require.NoError(t, multipartWriter.Close())
+	requestBytes := bytes.Clone(request.Bytes())
+	require.NoError(t, model.LOG_DB.Create(&model.Log{RequestId: "full-archive", UserId: 1}).Error)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits?api_key=synthetic-secret", bytes.NewReader(requestBytes))
+	c.Request.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	c.Request.Header.Set("Authorization", "Bearer synthetic-secret")
+	c.Set(common.RequestIdKey, "full-archive")
+	common.SetContextKey(c, constant.ContextKeyTokenLogDetailEnabled, true)
+	info := &relaycommon.RelayInfo{RequestId: "full-archive", UserId: 1, IsStream: true}
+	CaptureRelayRequestDetail(c, info)
+	defer common.CleanupBodyStorage(c)
+	archive := getLogDetailCapture(c).archive
+	require.NotNil(t, archive)
+	spoolPath := archive.file.Name()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.Equal(t, image, body)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(502)
+		_, _ = w.Write(image)
+	}))
+	defer server.Close()
+	configureSSRFTestFetchSetting(t)
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	fetchSetting := system_setting.GetFetchSetting()
+	fetchSetting.AllowPrivateIp = true
+	fetchSetting.AllowedPorts = []string{serverURL.Port()}
+	protected := newProtectedFetchHTTPClientWithProxy(nil, nil, nil, func(*http.Request) (*url.URL, error) { return nil, nil })
+	defer protected.CloseIdleConnections()
+	for _, client := range []*http.Client{newRelayHTTPClient(server.Client().Transport), protected} {
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, server.URL, bytes.NewReader(image))
+		require.NoError(t, err)
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+	stream := "event: response.output_item.added\ndata: {\"seed\":9007199254740993,\"type\":\"function_call\"}\n\ndata: [DONE]\n\n"
+	c.Header("Content-Type", "text/event-stream")
+	_, err = c.Writer.WriteString(stream)
+	require.NoError(t, err)
+	FlushCapturedLogDetailResponse(c, info, 200)
+	assert.NoFileExists(t, spoolPath)
+	detail, err := model.GetLogDetailByRequestId(info.RequestId)
+	require.NoError(t, err)
+	require.True(t, detail.ArchiveComplete)
+	assert.Equal(t, stream, string(detail.ResponseBody))
+	var compressed bytes.Buffer
+	require.NoError(t, model.WriteLogDetailArchive(context.Background(), info.RequestId, detail.ArchiveBytes, &compressed))
+	reader, err := gzip.NewReader(&compressed)
+	require.NoError(t, err)
+	defer reader.Close()
+	scanner := bufio.NewScanner(reader)
+	byStream := map[string][]byte{}
+	for scanner.Scan() {
+		assert.NotContains(t, scanner.Text(), "synthetic-secret")
+		var event logDetailArchiveEvent
+		require.NoError(t, common.Unmarshal(scanner.Bytes(), &event))
+		assert.LessOrEqual(t, len(event.Data), 32*1024)
+		key := fmt.Sprintf("%s:%d", event.Stage, event.Exchange)
+		byStream[key] = append(byStream[key], event.Data...)
+	}
+	require.NoError(t, scanner.Err())
+	assert.Equal(t, requestBytes, byStream["client_request_body:0"])
+	assert.Equal(t, []byte(stream), byStream["client_response_body:0"])
+	for exchange := 1; exchange <= 2; exchange++ {
+		assert.Equal(t, image, byStream[fmt.Sprintf("upstream_request_body:%d", exchange)])
+		assert.Equal(t, image, byStream[fmt.Sprintf("upstream_response_body:%d", exchange)])
+	}
+}
 
 func TestDeduplicateRawResponseRemovesOnlyIdenticalBody(t *testing.T) {
 	raw := logDetailText{Text: `{"id":"same"}`, Original: 128, Truncated: true}
@@ -79,7 +305,7 @@ func TestSanitizeTextBodyTruncatesAtLimit(t *testing.T) {
 	got := sanitizeTextBody(strings.Repeat("a", defaultLogDetailTextLimitBytes+1), "application/json")
 
 	assert.True(t, got.Truncated)
-	assert.Equal(t, defaultLogDetailTextLimitBytes, len(got.Text))
+	assert.Equal(t, currentLogDetailTextLimitBytes(), len(got.Text))
 }
 
 func TestSanitizeLogDetailForUserRemovesInternalParams(t *testing.T) {
@@ -152,94 +378,6 @@ func TestGetLogDetailKeepsUpstreamDiagnosticsAdminOnly(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
-}
-
-func TestStreamDisplayTextExtractsChatCompletionDeltas(t *testing.T) {
-	raw := strings.Join([]string{
-		`data: {"id":"resp_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
-		``,
-		`:`,
-		`: PING`,
-		`data: {"id":"resp_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"下面"},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"resp_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"给"},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"resp_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"出"},"finish_reason":null}]}`,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-	text := logDetailText{
-		Text:     raw,
-		Original: len(raw),
-	}
-
-	got := displayResponseDetailText(text, "text/event-stream", true)
-
-	assert.Equal(t, "下面给出", got.Text)
-	assert.NotContains(t, got.Text, "data:")
-	assert.NotContains(t, got.Text, "resp_1")
-	assert.Equal(t, len(raw), got.Original)
-}
-
-func TestStreamDisplayTextExtractsReasoningAndResponsesDeltas(t *testing.T) {
-	raw := strings.Join([]string{
-		`data: {"choices":[{"delta":{"reasoning_content":"思考","content":"回答"}}]}`,
-		`data: {"type":"response.output_text.delta","delta":"内容"}`,
-		`data: [DONE]`,
-	}, "\n")
-	text := logDetailText{
-		Text:     raw,
-		Original: len(raw),
-	}
-
-	got := displayResponseDetailText(text, "text/event-stream; charset=utf-8", true)
-
-	assert.Equal(t, "思考回答内容", got.Text)
-}
-
-func TestStreamDisplayTextExtractsClaudeDeltaText(t *testing.T) {
-	raw := strings.Join([]string{
-		`event: content_block_delta`,
-		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}`,
-		``,
-	}, "\n")
-	text := logDetailText{
-		Text:     raw,
-		Original: len(raw),
-	}
-
-	got := displayResponseDetailText(text, "text/event-stream", true)
-
-	assert.Equal(t, "hello", got.Text)
-}
-
-func TestStreamDisplayTextFallsBackToRawWhenNoReadableText(t *testing.T) {
-	raw := strings.Join([]string{
-		`data: {"id":"resp_1","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}`,
-		`data: [DONE]`,
-	}, "\n")
-	text := logDetailText{
-		Text:      raw,
-		Original:  len(raw),
-		Truncated: true,
-	}
-
-	got := displayResponseDetailText(text, "text/event-stream", true)
-
-	assert.Equal(t, raw, got.Text)
-	assert.True(t, got.Truncated)
-}
-
-func TestDisplayTextKeepsNonStreamJSON(t *testing.T) {
-	raw := `{"choices":[{"message":{"content":"普通响应"}}]}`
-	text := logDetailText{
-		Text:     raw,
-		Original: len(raw),
-	}
-
-	got := displayResponseDetailText(text, "application/json", false)
-
-	assert.Equal(t, raw, got.Text)
 }
 
 func TestHasUpstreamRawCaptureDetectsWrappedResponse(t *testing.T) {

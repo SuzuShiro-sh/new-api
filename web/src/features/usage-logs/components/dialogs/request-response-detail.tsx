@@ -25,11 +25,13 @@ import {
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import {
   Empty,
   EmptyDescription,
@@ -39,11 +41,12 @@ import {
 } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { api } from '@/lib/api'
+import { handleServerError } from '@/lib/handle-server-error'
 import { cn } from '@/lib/utils'
 
+import { downloadBlob } from '../../lib/export'
 import { getLogDetail, type LogDetail } from '../../log-detail-api'
-
-const MAX_FORMATTABLE_JSON_BYTES = 512 * 1024
 
 type RequestResponseDetailProps = {
   requestId: string
@@ -55,16 +58,6 @@ type DetailCodeBlockProps = {
   value?: string
   emptyText: string
   tone?: 'default' | 'danger'
-}
-
-function formatDetailText(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed || value.length > MAX_FORMATTABLE_JSON_BYTES) return value
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2)
-  } catch {
-    return value
-  }
 }
 
 function formatBytes(bytes: number): string {
@@ -80,7 +73,7 @@ function formatBytes(bytes: number): string {
 
 function DetailCodeBlock(props: DetailCodeBlockProps) {
   const { t } = useTranslation()
-  const text = formatDetailText(props.value ?? '')
+  const text = props.value ?? ''
   const hasText = text.trim().length > 0
 
   return (
@@ -276,10 +269,12 @@ function DetailContent(props: { detail: LogDetail }) {
 
 export function RequestResponseDetail(props: RequestResponseDetailProps) {
   const { t } = useTranslation()
+  const [downloading, setDownloading] = useState(false)
   const query = useQuery({
     queryKey: ['log-detail', props.isAdmin, props.requestId],
     queryFn: () => getLogDetail(props.requestId, props.isAdmin),
-    staleTime: 30_000,
+    staleTime: 0,
+    gcTime: 0,
     retry: false,
   })
 
@@ -299,5 +294,47 @@ export function RequestResponseDetail(props: RequestResponseDetailProps) {
     )
   }
 
-  return <DetailContent detail={query.data.data} />
+  const detail = query.data.data
+  const downloadArchive = async () => {
+    setDownloading(true)
+    try {
+      const response = await api.get(
+        `/api/log/detail/${encodeURIComponent(props.requestId)}`,
+        { params: { format: 'archive' }, responseType: 'blob' }
+      )
+      if (
+        !String(response.headers['content-type']).includes('application/gzip')
+      ) {
+        throw new Error(t('Failed to download original traffic'))
+      }
+      downloadBlob(response.data, `request-detail-${detail.id}.ndjson.gz`)
+    } catch (error) {
+      handleServerError(error, t('Failed to download original traffic'))
+    } finally {
+      setDownloading(false)
+    }
+  }
+  return (
+    <div className='space-y-3'>
+      {props.isAdmin && (detail.archive_bytes ?? 0) > 0 && (
+        <div className='flex flex-wrap items-center gap-2'>
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={downloading}
+            onClick={downloadArchive}
+          >
+            {t('Download original traffic')} (
+            {formatBytes(detail.archive_bytes ?? 0)})
+          </Button>
+          {!detail.archive_complete && (
+            <span className='text-destructive text-xs'>
+              {t('Original traffic capture is incomplete')}
+            </span>
+          )}
+        </div>
+      )}
+      <DetailContent detail={detail} />
+    </div>
+  )
 }

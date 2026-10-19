@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -50,7 +51,13 @@ func DoWorkerRequest(req *WorkerRequest) (*http.Response, error) {
 }
 
 func DoDownloadRequest(originUrl string, reason ...string) (resp *http.Response, err error) {
+	return DoDownloadRequestWithContext(context.Background(), originUrl, reason...)
+}
+
+func DoDownloadRequestWithContext(ctx context.Context, originUrl string, reason ...string) (resp *http.Response, err error) {
 	if system_setting.EnableWorker() {
+		// Worker 控制协议的正文含验证密钥，不归档该凭据交换。
+		markLogDetailArchiveIncomplete(ctx, "worker download credential exchange is excluded")
 		common.SysLog(common.LogText("downloading file from worker: %s, reason: %s", originUrl, strings.Join(reason, ", ")))
 		req := &WorkerRequest{
 			URL: originUrl,
@@ -64,6 +71,10 @@ func DoDownloadRequest(originUrl string, reason ...string) (resp *http.Response,
 		}
 
 		common.SysLog(common.LogText("downloading from origin: %s, reason: %s", common.MaskSensitiveInfo(originUrl), strings.Join(reason, ", ")))
-		return GetSSRFProtectedHTTPClient().Get(originUrl)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, originUrl, nil)
+		if err != nil {
+			return nil, err
+		}
+		return GetSSRFProtectedHTTPClient().Do(req)
 	}
 }

@@ -41,7 +41,7 @@ type LogDetailCleanupResult struct {
 	Partial        bool                 `json:"partial,omitempty"`
 }
 
-// LogDetailCleanupConflictError 表示另一种详情维护模式正在执行。
+// LogDetailCleanupConflictError 表示参数不一致的详情维护任务正在执行。
 type LogDetailCleanupConflictError struct {
 	RequestedMode LogDetailCleanupMode
 	ActiveMode    LogDetailCleanupMode
@@ -107,14 +107,14 @@ func startLogDetailCleanupTask(payload LogDetailCleanupPayload) (*model.SystemTa
 		return nil, err
 	}
 	if activeTask != nil {
-		return reuseMatchingLogDetailTask(activeTask, payload.Mode)
+		return reuseMatchingLogDetailTask(activeTask, payload)
 	}
 
 	task, err := model.CreateSystemTask(model.SystemTaskTypeLogDetailCleanup, payload, LogCleanupState{})
 	if err != nil {
 		activeTask, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeLogDetailCleanup)
 		if activeErr == nil && activeTask != nil {
-			return reuseMatchingLogDetailTask(activeTask, payload.Mode)
+			return reuseMatchingLogDetailTask(activeTask, payload)
 		}
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func startLogDetailCleanupTask(payload LogDetailCleanupPayload) (*model.SystemTa
 	return task, nil
 }
 
-func reuseMatchingLogDetailTask(task *model.SystemTask, requestedMode LogDetailCleanupMode) (*model.SystemTask, error) {
+func reuseMatchingLogDetailTask(task *model.SystemTask, requested LogDetailCleanupPayload) (*model.SystemTask, error) {
 	payload := LogDetailCleanupPayload{}
 	if err := task.DecodePayload(&payload); err != nil {
 		return nil, fmt.Errorf("failed to decode active log detail cleanup task: %w", err)
@@ -130,9 +130,9 @@ func reuseMatchingLogDetailTask(task *model.SystemTask, requestedMode LogDetailC
 	if payload.Mode == "" {
 		payload.Mode = LogDetailCleanupModeExpired
 	}
-	if payload.Mode != requestedMode {
+	if payload.Mode != requested.Mode || payload.TargetTimestamp != requested.TargetTimestamp || payload.ReclaimSpace != requested.ReclaimSpace {
 		return nil, &LogDetailCleanupConflictError{
-			RequestedMode: requestedMode,
+			RequestedMode: requested.Mode,
 			ActiveMode:    payload.Mode,
 		}
 	}

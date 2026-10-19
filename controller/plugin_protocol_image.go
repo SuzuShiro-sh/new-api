@@ -40,6 +40,9 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	var relayInfoErr error
 	var outcome *taskSubmissionOutcome
 	var taskErr *dto.TaskError
+	defer func() {
+		service.FlushCapturedLogDetailResponse(c, relayInfo, c.Writer.Status())
+	}()
 	// DashScope bills the images as soon as it accepts the upstream call. A
 	// client that gives up while the submission is in flight must not cancel
 	// that call, the task row, its settlement, or its consume log, so the
@@ -63,6 +66,8 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		}
 		relayInfo.IsStream = false
 		relayInfo.OriginModelName = c.GetString("resolved_task_model")
+		service.CaptureRelayRequestDetail(c, relayInfo)
+		clientRequest = service.AttachLogDetailRequestContext(c, clientRequest)
 		if action := c.GetString("task_action"); action != "" {
 			relayInfo.Action = action
 		}
@@ -157,7 +162,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 			if existing, _ := item["b64_json"].(string); strings.TrimSpace(url) == "" || existing != "" {
 				continue
 			}
-			_, encoded, downloadErr := deps.downloadImage(url)
+			_, encoded, downloadErr := deps.downloadImage(c.Request.Context(), url)
 			if downloadErr != nil {
 				logger.LogWarn(c, common.LogText("task protocol image download failed; returning the upstream URL instead of b64_json: %s", common.MaskSensitiveInfo(downloadErr.Error(), common.UpstreamAddresses(c)...)))
 				continue
