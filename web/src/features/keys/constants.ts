@@ -72,9 +72,9 @@ export const API_KEY_STATUS_OPTIONS = Object.values(API_KEY_STATUSES).map(
 
 export const DEFAULT_GROUP = '' as const
 
-// API Key 有限额度同时受十亿美元业务上限和 32 位持久化字段约束。
+// 与后端 maxTokenQuota 的十亿美元业务上限和 MaxWalletQuota 保持一致。
 export const MAX_API_KEY_QUOTA_USD = 1_000_000_000
-export const MAX_API_KEY_QUOTA_UNITS = 2_147_483_647
+export const MAX_API_KEY_QUOTA_UNITS = Number.MAX_SAFE_INTEGER
 
 // ============================================================================
 // Error Messages (i18n keys: use t(ERROR_MESSAGES.xxx) when displaying)
