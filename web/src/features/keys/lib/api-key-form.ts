@@ -54,7 +54,7 @@ export function getApiKeyQuotaLimit(
 
   const maximumUnits = Math.min(
     MAX_API_KEY_QUOTA_UNITS,
-    Math.trunc(MAX_API_KEY_QUOTA_USD * quotaPerUnit)
+    Math.round(MAX_API_KEY_QUOTA_USD * quotaPerUnit)
   )
   return {
     maximumUnits,

@@ -140,18 +140,35 @@ describe('API key quota validation', () => {
     ).toBe(10_000)
   })
 
-  test('uses the billion-dollar cap below the int32 threshold', () => {
+  test('uses the billion-dollar cap below the safe integer threshold', () => {
     const display = setQuotaDisplay('USD', { quotaPerUnit: 0.5 })
 
     expect(getApiKeyQuotaLimit(display).maximumUnits).toBe(500_000_000)
   })
 
-  test('uses the int32 cap above the billion-dollar threshold', () => {
-    const display = setQuotaDisplay('USD', { quotaPerUnit: 3 })
+  test('uses the safe integer cap above the billion-dollar threshold', () => {
+    const display = setQuotaDisplay('USD', { quotaPerUnit: 10_000_000 })
 
     expect(getApiKeyQuotaLimit(display).maximumUnits).toBe(
       MAX_API_KEY_QUOTA_UNITS
     )
+  })
+
+  test('allows editing an existing finite quota above the old int32 boundary', () => {
+    const display = setQuotaDisplay('USD')
+    const values = transformApiKeyToFormDefaults(
+      apiKeyFixture(2_500_000_000),
+      [],
+      5,
+      display
+    )
+    values.name = 'renamed'
+    expect(getApiKeyFormSchema(t, 5, display).safeParse(values).success).toBe(
+      true
+    )
+    expect(
+      transformFormDataToPayload(values, { quotaDisplay: display }).remain_quota
+    ).toBe(2_500_000_000)
   })
 
   test('preserves untouched raw quota when global currency settings change', () => {
