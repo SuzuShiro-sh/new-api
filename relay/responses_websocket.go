@@ -79,10 +79,12 @@ type responsesWSControl struct {
 // Only the request worker reads or changes billing state. Socket readers pass
 // bounded messages to it; cancellation never performs an independent refund.
 type responsesWSCallState struct {
-	inbox    chan responsesWSMessage
-	controls chan responsesWSControl
-	done     chan struct{}
-	terminal *responsesWSMessage
+	detailContext *gin.Context
+	detailInfo    *relaycommon.RelayInfo
+	inbox         chan responsesWSMessage
+	controls      chan responsesWSControl
+	done          chan struct{}
+	terminal      *responsesWSMessage
 	// A nonzero closeCode ends the connection after this request.
 	closeCode   int
 	closeReason string
@@ -205,6 +207,9 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 				state.closeCode = websocket.CloseInternalServerErr
 			} else if err := s.client.WriteMessage(outgoing.kind, outgoing.body); err != nil {
 				state.closeCode = websocket.CloseInternalServerErr
+				service.RecordLogDetailWebSocketError(state.detailContext, err)
+			} else {
+				service.RecordLogDetailWebSocket(state.detailContext, "client_websocket_send", outgoing.kind, outgoing.body)
 			}
 		}
 		if state.closeCode != 0 {
@@ -214,6 +219,9 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 		close(state.done)
 		s.stateMu.Unlock()
 		s.clientWriteMu.Unlock()
+		if state.detailContext != nil {
+			service.FlushCapturedLogDetailResponse(state.detailContext, state.detailInfo, http.StatusSwitchingProtocols)
+		}
 	}()
 	request := s.request.Clone(s.ctx)
 	request.Body = io.NopCloser(bytes.NewReader(message))
@@ -225,7 +233,7 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(create.Body))
 		c.Request.ContentLength = int64(len(create.Body))
-		callErr := s.runCall(c, state, create)
+		callErr := s.runCall(c, state, create, message)
 		upstreamURLs = common.UpstreamAddresses(c)
 		return callErr
 	})
@@ -234,7 +242,7 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 	}
 }
 
-func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState, create responsesWSCreateRequest) (apiErr *types.NewAPIError) {
+func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState, create responsesWSCreateRequest, originalMessage []byte) (apiErr *types.NewAPIError) {
 	policy := service.RequestPolicy(c)
 	modelName := create.Request.Model
 	started := time.Now()
@@ -274,6 +282,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			return apiErr
 		}
 		info = relaycommon.GenRelayInfoResponses(c, &create.Request)
+		captureResponsesWSDetail(c, state, info, originalMessage)
 		info.IsStream = true
 		common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
 		if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
@@ -285,7 +294,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		if apiErr != nil {
 			return apiErr
 		}
-		if err := s.writeTarget(websocket.TextMessage, payload); err != nil {
+		if err := s.writeTarget(c, websocket.TextMessage, payload); err != nil {
 			state.closeCode = websocket.CloseInternalServerErr
 			return types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 		}
@@ -300,6 +309,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			service.AppendUsedChannel(c, channel.Id)
 			if info == nil {
 				info = relaycommon.GenRelayInfoResponses(c, &create.Request)
+				captureResponsesWSDetail(c, state, info, originalMessage)
 				info.IsStream = true
 				common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
 				if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
@@ -337,7 +347,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			if !s.setTarget(target) {
 				return types.NewError(context.Canceled, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
-			if err := s.writeTarget(websocket.TextMessage, payload); err != nil {
+			if err := s.writeTarget(c, websocket.TextMessage, payload); err != nil {
 				state.closeCode = websocket.CloseInternalServerErr
 				return types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
@@ -384,6 +394,8 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	for {
 		select {
 		case incoming := <-state.inbox:
+			service.RecordLogDetailWebSocket(c, "upstream_websocket_message", incoming.kind, incoming.body)
+			service.RecordLogDetailWebSocketError(c, incoming.err)
 			idle.Reset(timeout)
 			if incoming.err != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, incoming.err)
@@ -400,7 +412,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info.StreamStatus.RecordError("invalid upstream websocket event")
 			} else {
 				if event.Type != "error" && event.StreamID != "" && event.StreamID != create.StreamID {
-					if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+					if err := s.writeClient(c, incoming.kind, incoming.body); err != nil {
 						s.shutdown(websocket.CloseInternalServerErr, "")
 					}
 					continue
@@ -418,7 +430,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					}
 					terminal, ambiguous, controlError := responsesWSErrorEndsRequest(rejection, create.StreamID, responseID, sentControl)
 					if !terminal {
-						if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+						if err := s.writeClient(c, incoming.kind, incoming.body); err != nil {
 							s.shutdown(websocket.CloseInternalServerErr, "")
 						}
 						// Only a control error in this stream resolves its pending control.
@@ -478,17 +490,18 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				ConsumeResponsesQuota(c, info, accumulator.Finish())
 				return nil
 			}
-			if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+			if err := s.writeClient(c, incoming.kind, incoming.body); err != nil {
 				s.shutdown(websocket.CloseInternalServerErr, "")
 			}
 			if accepted && pendingControl != nil {
-				if err := s.writeTarget(websocket.TextMessage, pendingControl); err != nil {
+				if err := s.writeTarget(c, websocket.TextMessage, pendingControl); err != nil {
 					s.shutdown(websocket.CloseInternalServerErr, "")
 				}
 				sentControl = pendingControl
 				pendingControl = nil
 			}
 		case control := <-state.controls:
+			service.RecordLogDetailWebSocket(c, "client_websocket_message", websocket.TextMessage, control.body)
 			if pendingControl != nil || sentControl != nil {
 				s.sendError(control.eventID, control.streamID, newResponsesWSInvalidRequestError(errors.New("a response control event is already pending")))
 				continue
@@ -497,21 +510,32 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				pendingControl = control.body
 				continue
 			}
-			if err := s.writeTarget(websocket.TextMessage, control.body); err != nil {
+			if err := s.writeTarget(c, websocket.TextMessage, control.body); err != nil {
 				s.shutdown(websocket.CloseInternalServerErr, "")
 			}
 			sentControl = control.body
 		case <-idle.C:
+			service.RecordLogDetailWebSocketError(c, context.DeadlineExceeded)
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, context.DeadlineExceeded)
 			state.closeCode, state.closeReason = websocket.CloseInternalServerErr, "upstream response timed out"
 			ConsumeResponsesQuota(c, info, accumulator.Finish())
 			return nil
 		case <-s.ctx.Done():
+			service.RecordLogDetailWebSocketError(c, s.ctx.Err())
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, s.ctx.Err())
 			ConsumeResponsesQuota(c, info, accumulator.Finish())
 			return nil
 		}
 	}
+}
+
+// 中间件结束后才发终态事件；复制上下文保留采集器，避免持有已回收到 Gin 池的 Writer。
+func captureResponsesWSDetail(c *gin.Context, state *responsesWSCallState, info *relaycommon.RelayInfo, original []byte) {
+	service.CaptureRelayRequestDetail(c, info)
+	state.detailContext = c.Copy()
+	state.detailContext.Writer = nil
+	state.detailInfo = info
+	service.RecordLogDetailWebSocket(c, "client_websocket_message", websocket.TextMessage, original)
 }
 
 // A single generation is active, but a cancel can fail independently. Correlate
@@ -659,7 +683,7 @@ func (s *responsesWSSession) startTargetReader(target *websocket.Conn) {
 				s.shutdown(code, "upstream connection closed")
 				return
 			}
-			if writeErr := s.writeClient(kind, body); writeErr != nil {
+			if writeErr := s.writeClient(nil, kind, body); writeErr != nil {
 				s.shutdown(websocket.CloseInternalServerErr, "")
 				return
 			}
@@ -701,7 +725,7 @@ func (s *responsesWSSession) setTarget(target *websocket.Conn) bool {
 	return true
 }
 
-func (s *responsesWSSession) writeTarget(kind int, message []byte) error {
+func (s *responsesWSSession) writeTarget(c *gin.Context, kind int, message []byte) error {
 	s.targetWriteMu.Lock()
 	defer s.targetWriteMu.Unlock()
 	target := s.getTarget()
@@ -711,16 +735,26 @@ func (s *responsesWSSession) writeTarget(kind int, message []byte) error {
 	if err := target.SetWriteDeadline(time.Now().Add(responsesWSWriteTimeout)); err != nil {
 		return err
 	}
-	return target.WriteMessage(kind, message)
+	err := target.WriteMessage(kind, message)
+	service.RecordLogDetailWebSocketError(c, err)
+	if err == nil {
+		service.RecordLogDetailWebSocket(c, "upstream_websocket_send", kind, message)
+	}
+	return err
 }
 
-func (s *responsesWSSession) writeClient(kind int, message []byte) error {
+func (s *responsesWSSession) writeClient(c *gin.Context, kind int, message []byte) error {
 	s.clientWriteMu.Lock()
 	defer s.clientWriteMu.Unlock()
 	if err := s.client.SetWriteDeadline(time.Now().Add(responsesWSWriteTimeout)); err != nil {
 		return err
 	}
-	return s.client.WriteMessage(kind, message)
+	err := s.client.WriteMessage(kind, message)
+	service.RecordLogDetailWebSocketError(c, err)
+	if err == nil {
+		service.RecordLogDetailWebSocket(c, "client_websocket_send", kind, message)
+	}
+	return err
 }
 
 func (s *responsesWSSession) sendError(eventID, streamID string, apiErr *types.NewAPIError) {
@@ -729,7 +763,7 @@ func (s *responsesWSSession) sendError(eventID, streamID string, apiErr *types.N
 	}
 	payload, err := buildResponsesWSErrorPayload(eventID, streamID, apiErr)
 	if err == nil {
-		_ = s.writeClient(websocket.TextMessage, payload)
+		_ = s.writeClient(nil, websocket.TextMessage, payload)
 	}
 }
 

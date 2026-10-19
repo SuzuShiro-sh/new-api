@@ -48,6 +48,7 @@ import { LogDetailCleanupControl } from './log-detail-cleanup-control'
 
 const logDetailSettingsSchema = z.object({
   LogDetailEnabled: z.boolean(),
+  LogDetailFullCaptureEnabled: z.boolean(),
   LogDetailRetentionDays: z.number().int().min(0).max(3650),
   LogDetailMaxBodyKB: z.number().int().min(16).max(5120),
 })
@@ -64,11 +65,14 @@ export function LogDetailSettingsSection(props: LogDetailSettingsSectionProps) {
   const defaultValues = useMemo<LogDetailSettingsFormValues>(
     () => ({
       LogDetailEnabled: props.defaultValues.LogDetailEnabled,
+      LogDetailFullCaptureEnabled:
+        props.defaultValues.LogDetailFullCaptureEnabled,
       LogDetailRetentionDays: props.defaultValues.LogDetailRetentionDays,
       LogDetailMaxBodyKB: props.defaultValues.LogDetailMaxBodyKB,
     }),
     [
       props.defaultValues.LogDetailEnabled,
+      props.defaultValues.LogDetailFullCaptureEnabled,
       props.defaultValues.LogDetailMaxBodyKB,
       props.defaultValues.LogDetailRetentionDays,
     ]
@@ -116,6 +120,32 @@ export function LogDetailSettingsSection(props: LogDetailSettingsSectionProps) {
                   <FormDescription>
                     {t(
                       'Allow API keys with detail logging enabled to store request and response bodies. This content can be sensitive and increases database usage.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <FormMessage />
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='LogDetailFullCaptureEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>
+                    {t('Capture original traffic for debugging')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Save original bodies, images, binary data, and stream events in a downloadable archive. Credentials in headers and URLs are redacted. Uses temporary disk space and additional database storage. Applies only to API keys with detail logging enabled.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>
@@ -181,7 +211,7 @@ export function LogDetailSettingsSection(props: LogDetailSettingsSectionProps) {
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'Request, response, raw response, and error content are truncated independently at this limit.'
+                      'Preview sections are truncated independently at this limit. Original traffic archives are not truncated by this setting.'
                     )}
                   </FormDescription>
                   <FormMessage />

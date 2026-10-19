@@ -32,6 +32,8 @@ export interface LogDetail {
   is_stream: boolean
   status_code: number
   stored_bytes: number
+  archive_bytes?: number
+  archive_complete?: boolean
   request_body: string
   request_params: string
   response_body: string

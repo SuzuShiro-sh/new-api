@@ -414,6 +414,7 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		dialer.TLSClientConfig = common2.InsecureTLSConfig
 	}
 	targetConn, resp, err := dialer.DialContext(c.Request.Context(), fullRequestURL, targetHeader)
+	service.RecordLogDetailWebSocketHandshake(c, fullRequestURL, targetHeader, resp, err)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		if resp != nil {
@@ -566,6 +567,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, req.URL.Scheme+"://"+req.URL.Host)
+	req = service.AttachLogDetailRequestContext(c, req)
 	resp, err := relayClient.Do(req)
 	if err != nil {
 		logger.LogError(c, common2.LogText("do request failed: %s", err.Error()))

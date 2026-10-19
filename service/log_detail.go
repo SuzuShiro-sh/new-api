@@ -20,7 +20,6 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
@@ -45,6 +44,7 @@ type logDetailCapture struct {
 	responseContentType string
 	statusCode          int
 	finalized           bool
+	archive             *logDetailArchive
 	mu                  sync.Mutex
 }
 
@@ -167,12 +167,19 @@ type responseBodyCapture struct {
 	contentType string
 	buf         *limitedTextBuffer
 	once        sync.Once
+	mu          sync.Mutex
 }
 
 type LogDetailResponseWriter struct {
 	gin.ResponseWriter
-	buf *limitedTextBuffer
-	mu  *sync.Mutex
+	buf     *limitedTextBuffer
+	mu      *sync.Mutex
+	archive *logDetailArchive
+}
+
+// Unwrap 保留 ResponseController 对底层连接写超时的访问能力。
+func (w *LogDetailResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func CaptureRelayRequestDetail(c *gin.Context, info *relaycommon.RelayInfo) {
@@ -184,6 +191,9 @@ func CaptureRelayRequestDetail(c *gin.Context, info *relaycommon.RelayInfo) {
 		return
 	}
 	if !model.IsLogDetailStoreAvailable() {
+		return
+	}
+	if getLogDetailCapture(c) != nil {
 		return
 	}
 	requestId := requestIdFromContext(c, info)
@@ -211,6 +221,10 @@ func CaptureRelayRequestDetail(c *gin.Context, info *relaycommon.RelayInfo) {
 		capture.requestBody.Reason = "websocket realtime frames are not captured"
 	}
 	capture.mu.Unlock()
+	if common.LogDetailFullCaptureEnabled {
+		capture.archive = startLogDetailArchive(c)
+		wrappedWriter.archive = capture.archive
+	}
 }
 
 func WrapLogDetailResponse(c *gin.Context, resp *http.Response) *http.Response {
@@ -256,8 +270,10 @@ func CaptureLogDetailBytesResponse(c *gin.Context, src *http.Response, data []by
 	}
 	text := logDetailText{Original: len(data)}
 	if isTextContentType(contentType) {
-		text = sanitizeTextBody(string(data), contentType)
+		limit := currentLogDetailTextLimitBytes()
+		text = sanitizeTextBody(string(data[:min(len(data), limit)]), contentType)
 		text.Original = len(data)
+		text.Truncated = text.Truncated || len(data) > limit
 	} else {
 		text.Omitted = true
 		text.Reason = "binary response content-type " + contentType
@@ -300,6 +316,8 @@ func getLogDetailCapture(c *gin.Context) *logDetailCapture {
 
 func (r *responseBodyCapture) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if n > 0 {
 		r.buf.writeBytes(p[:n])
 	}
@@ -310,7 +328,9 @@ func (r *responseBodyCapture) Read(p []byte) (int, error) {
 }
 
 func (r *responseBodyCapture) Close() error {
+	r.mu.Lock()
 	r.flush()
+	r.mu.Unlock()
 	return r.ReadCloser.Close()
 }
 
@@ -328,6 +348,8 @@ func (r *responseBodyCapture) flush() {
 }
 
 func (w *LogDetailResponseWriter) Write(data []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(data)
+	data = data[:n]
 	if w != nil && w.buf != nil {
 		if w.mu != nil {
 			w.mu.Lock()
@@ -337,20 +359,18 @@ func (w *LogDetailResponseWriter) Write(data []byte) (int, error) {
 			w.mu.Unlock()
 		}
 	}
-	return w.ResponseWriter.Write(data)
+	w.archive.record(logDetailArchiveEvent{Stage: "client_response_body", Data: data})
+	if err != nil && w.archive != nil {
+		w.archive.mu.Lock()
+		w.archive.incomplete = true
+		w.archive.mu.Unlock()
+		w.archive.record(logDetailArchiveEvent{Stage: "client_write_error", Error: err.Error()})
+	}
+	return n, err
 }
 
 func (w *LogDetailResponseWriter) WriteString(data string) (int, error) {
-	if w != nil && w.buf != nil {
-		if w.mu != nil {
-			w.mu.Lock()
-		}
-		w.buf.writeString(data)
-		if w.mu != nil {
-			w.mu.Unlock()
-		}
-	}
-	return w.ResponseWriter.WriteString(data)
+	return w.Write(common.StringToByteSlice(data))
 }
 
 func (w *LogDetailResponseWriter) Status() int {
@@ -397,8 +417,8 @@ func FlushCapturedLogDetailResponse(c *gin.Context, info *relaycommon.RelayInfo,
 		return
 	}
 	ldc.finalized = true
-	responseContentType := ldc.responseContentType
-	if responseContentType == "" && c.Writer != nil {
+	responseContentType := ""
+	if c.Writer != nil {
 		responseContentType = c.Writer.Header().Get("Content-Type")
 	}
 	requestText := ldc.requestBody
@@ -416,7 +436,8 @@ func FlushCapturedLogDetailResponse(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 	meta := buildLogDetailMeta(c, info, statusCode)
 	meta.ResponseContentType = responseContentType
-	displayText := displayResponseDetailText(responseText, responseContentType, meta.IsStream)
+	// 保留客户端实际收到的 SSE 事件、工具调用和用量，不以提取的文本替换原响应。
+	displayText := responseText
 	rawResponseText, meta.RawBodyDeduplicated = deduplicateRawResponse(rawResponseText, displayText)
 	applyTextMeta(&meta, "request", requestText)
 	applyTextMeta(&meta, "response", displayText)
@@ -455,11 +476,36 @@ func FlushCapturedLogDetailResponse(c *gin.Context, info *relaycommon.RelayInfo,
 			errorText.Reason,
 		), 255),
 	}
+	if ldc.archive != nil {
+		defer ldc.archive.cleanup()
+		ldc.archive.record(logDetailArchiveEvent{Stage: "relay_metadata", Metadata: common.RawMessage(metaJSON)})
+		ldc.archive.mu.Lock()
+		observed := ldc.archive.upstreamObserved
+		ldc.archive.mu.Unlock()
+		if !observed {
+			markLogDetailArchiveIncomplete(c.Request.Context(), "no upstream exchange captured; the request was rejected before forwarding or this path is not instrumented")
+		}
+		var archiveErr error
+		var headers http.Header
+		if c.Writer != nil {
+			headers = c.Writer.Header()
+		}
+		detail.Archive, detail.ArchiveComplete, archiveErr = ldc.archive.finish(headers, statusCode)
+		if archiveErr != nil {
+			detail.ContentOmitted = true
+			detail.OmitReason = truncatePlainText(archiveErr.Error(), 255)
+			logger.LogError(c, "failed to finalize log detail archive: "+archiveErr.Error())
+		}
+	}
 	requestContext := context.Background()
 	if c.Request != nil {
 		requestContext = context.WithoutCancel(c.Request.Context())
 	}
-	ctx, cancel := context.WithTimeout(requestContext, logDetailSaveTimeout)
+	saveTimeout := logDetailSaveTimeout
+	if detail.Archive != nil {
+		saveTimeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(requestContext, saveTimeout)
 	defer cancel()
 	if _, err := model.SaveLogDetailIfLogExists(ctx, detail); err != nil {
 		logger.LogError(c, "failed to save log detail: "+err.Error())
@@ -492,6 +538,7 @@ func SetLogDetailError(c *gin.Context, statusCode int, errText string) {
 	capture.statusCode = statusCode
 	capture.errorBody = text
 	capture.mu.Unlock()
+	capture.archive.record(logDetailArchiveEvent{Stage: "relay_error", Status: statusCode, Error: common.MaskSensitiveInfo(errText)})
 }
 
 func GetLogDetail(c *gin.Context, requestId string, isAdmin bool) (*model.LogDetail, error) {
@@ -517,6 +564,8 @@ func sanitizeLogDetailForUser(detail *model.LogDetail) {
 	// 普通用户保留实际客户端响应，管理员仍可查看完整诊断内容。
 	detail.RawResponseBody = ""
 	detail.ErrorBody = ""
+	detail.ArchiveBytes = 0
+	detail.ArchiveComplete = false
 	if strings.TrimSpace(string(detail.RequestParams)) == "" {
 		return
 	}
@@ -624,9 +673,17 @@ func sanitizeTextBody(text string, contentType string) logDetailText {
 	if text == "" {
 		return result.value()
 	}
+	original := len(text)
+	limit := result.limit
+	// 先限长再扫描媒体，避免已读取的大响应在详情处理时再分配一份同样大的字符串。
+	if len(text) > limit {
+		text = text[:limit]
+	}
 	sanitized := replaceMediaData(text)
 	result.writeString(sanitized)
 	value := result.value()
+	value.Original = original
+	value.Truncated = value.Truncated || original > limit
 	// 流分片可以切在字符内部，仅在最终生成文本时处理不完整 UTF-8。
 	value.Text = strings.ToValidUTF8(value.Text, "")
 	return value
@@ -646,209 +703,6 @@ func sanitizeCapturedText(text logDetailText, contentType string) logDetailText 
 	sanitized.Original = text.Original
 	sanitized.Truncated = text.Truncated || sanitized.Truncated
 	return sanitized
-}
-
-func displayResponseDetailText(text logDetailText, contentType string, isStream bool) logDetailText {
-	if text.Omitted || text.Text == "" {
-		return text
-	}
-	if !isStream && !isEventStreamContentType(contentType) {
-		return text
-	}
-	display, ok := extractStreamOutputText(text.Text)
-	if !ok || strings.TrimSpace(display) == "" {
-		return text
-	}
-	result := sanitizeTextBody(display, "text/plain")
-	result.Original = text.Original
-	result.Truncated = text.Truncated || result.Truncated
-	result.Omitted = text.Omitted
-	result.Reason = text.Reason
-	return result
-}
-
-func extractStreamOutputText(stream string) (string, bool) {
-	var output strings.Builder
-	eventData := make([]string, 0, 1)
-	extracted := false
-
-	flushEvent := func() {
-		if len(eventData) == 0 {
-			return
-		}
-		payload := strings.TrimSpace(strings.Join(eventData, "\n"))
-		if appendStreamPayloadOutput(&output, payload) {
-			extracted = true
-		}
-		eventData = eventData[:0]
-	}
-
-	handlePayload := func(payload string) {
-		payload = strings.TrimSpace(payload)
-		if payload == "" || strings.HasPrefix(payload, "[DONE]") {
-			flushEvent()
-			return
-		}
-		if len(eventData) > 0 {
-			eventData = append(eventData, payload)
-			combined := strings.TrimSpace(strings.Join(eventData, "\n"))
-			if appendStreamPayloadOutput(&output, combined) {
-				extracted = true
-				eventData = eventData[:0]
-			} else if isJSONStreamPayload(combined) {
-				eventData = eventData[:0]
-			}
-			return
-		}
-		if appendStreamPayloadOutput(&output, payload) {
-			extracted = true
-			return
-		}
-		if isJSONStreamPayload(payload) {
-			return
-		}
-		eventData = append(eventData, payload)
-	}
-
-	for line := range strings.SplitSeq(stream, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			flushEvent()
-			continue
-		}
-		if strings.HasPrefix(trimmed, ":") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "data:") {
-			handlePayload(strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
-			continue
-		}
-	}
-	flushEvent()
-
-	return output.String(), extracted
-}
-
-func isJSONStreamPayload(payload string) bool {
-	var data any
-	return common.UnmarshalJsonStr(payload, &data) == nil
-}
-
-func appendStreamPayloadOutput(output *strings.Builder, payload string) bool {
-	if output == nil {
-		return false
-	}
-	payload = strings.TrimSpace(payload)
-	if payload == "" || strings.HasPrefix(payload, "[DONE]") {
-		return false
-	}
-
-	before := output.Len()
-	appendChatCompletionsStreamOutput(output, payload)
-	appendCompletionsStreamOutput(output, payload)
-	appendResponsesStreamOutput(output, payload)
-	appendClaudeStreamOutput(output, payload)
-	if output.Len() > before {
-		return true
-	}
-
-	appendGenericStreamOutput(output, payload)
-	return output.Len() > before
-}
-
-func appendChatCompletionsStreamOutput(output *strings.Builder, payload string) {
-	var streamResponse dto.ChatCompletionsStreamResponse
-	if err := common.UnmarshalJsonStr(payload, &streamResponse); err != nil {
-		return
-	}
-	for _, choice := range streamResponse.Choices {
-		appendOutputPart(output, choice.Delta.GetReasoningContent())
-		appendOutputPart(output, choice.Delta.GetContentString())
-	}
-}
-
-func appendCompletionsStreamOutput(output *strings.Builder, payload string) {
-	var streamResponse dto.CompletionsStreamResponse
-	if err := common.UnmarshalJsonStr(payload, &streamResponse); err != nil {
-		return
-	}
-	for _, choice := range streamResponse.Choices {
-		appendOutputPart(output, choice.Text)
-	}
-}
-
-func appendResponsesStreamOutput(output *strings.Builder, payload string) {
-	var streamResponse dto.ResponsesStreamResponse
-	if err := common.UnmarshalJsonStr(payload, &streamResponse); err != nil {
-		return
-	}
-	switch streamResponse.Type {
-	case "response.output_text.delta":
-		appendOutputPart(output, streamResponse.Delta)
-	}
-}
-
-func appendClaudeStreamOutput(output *strings.Builder, payload string) {
-	var streamResponse dto.ClaudeResponse
-	if err := common.UnmarshalJsonStr(payload, &streamResponse); err != nil {
-		return
-	}
-	if streamResponse.Type != "content_block_delta" || streamResponse.Delta == nil {
-		return
-	}
-	appendOutputPart(output, streamResponse.Delta.GetText())
-	if streamResponse.Delta.Thinking != nil {
-		appendOutputPart(output, *streamResponse.Delta.Thinking)
-	}
-	appendOutputPart(output, streamResponse.Delta.Delta)
-}
-
-func appendGenericStreamOutput(output *strings.Builder, payload string) {
-	var data map[string]any
-	if err := common.UnmarshalJsonStr(payload, &data); err != nil {
-		return
-	}
-	if streamType, _ := data["type"].(string); streamType == "response.output_text.delta" {
-		if delta, ok := data["delta"].(string); ok {
-			appendOutputPart(output, delta)
-			return
-		}
-	}
-	if choices, ok := data["choices"].([]any); ok {
-		for _, item := range choices {
-			choice, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if text, ok := choice["text"].(string); ok {
-				appendOutputPart(output, text)
-			}
-			if delta, ok := choice["delta"].(map[string]any); ok {
-				appendOutputPartFromMap(output, delta, "reasoning_content")
-				appendOutputPartFromMap(output, delta, "reasoning")
-				appendOutputPartFromMap(output, delta, "content")
-			}
-		}
-	}
-	if delta, ok := data["delta"].(map[string]any); ok {
-		appendOutputPartFromMap(output, delta, "thinking")
-		appendOutputPartFromMap(output, delta, "text")
-		appendOutputPartFromMap(output, delta, "content")
-	}
-}
-
-func appendOutputPartFromMap(output *strings.Builder, data map[string]any, key string) {
-	if value, ok := data[key].(string); ok {
-		appendOutputPart(output, value)
-	}
-}
-
-func appendOutputPart(output *strings.Builder, text string) {
-	if output == nil || text == "" {
-		return
-	}
-	output.WriteString(text)
 }
 
 func replaceMediaData(text string) string {
@@ -875,6 +729,8 @@ func summarizeMultipartText(reader io.Reader, originalSize int64, contentType st
 	summary := make(map[string]any)
 	fields := make(map[string][]string)
 	omittedFiles := make([]string, 0)
+	remaining := currentLogDetailTextLimitBytes()
+	truncated := false
 	for {
 		part, err := multipartBody.NextPart()
 		if err == io.EOF {
@@ -884,6 +740,11 @@ func summarizeMultipartText(reader io.Reader, originalSize int64, contentType st
 			return logDetailText{Original: int(originalSize), Omitted: true, Reason: "failed to parse multipart body"}
 		}
 		name := part.FormName()
+		remaining -= len(name) + len(part.FileName()) + 16
+		if remaining <= 0 {
+			truncated = true
+			break
+		}
 		if name == "" {
 			continue
 		}
@@ -891,9 +752,16 @@ func summarizeMultipartText(reader io.Reader, originalSize int64, contentType st
 			omittedFiles = append(omittedFiles, name)
 			continue
 		}
-		limit := currentLogDetailTextLimitBytes()
-		value, _ := io.ReadAll(io.LimitReader(part, int64(limit+1)))
-		fields[name] = append(fields[name], truncatePlainText(string(value), limit))
+		value, readErr := io.ReadAll(io.LimitReader(part, int64(remaining+1)))
+		if readErr != nil {
+			return logDetailText{Original: int(originalSize), Omitted: true, Reason: "read multipart field: " + readErr.Error()}
+		}
+		fields[name] = append(fields[name], truncatePlainText(string(value), remaining))
+		remaining -= len(value)
+		if remaining <= 0 {
+			truncated = true
+			break
+		}
 	}
 	summary["text_fields"] = fields
 	if len(omittedFiles) > 0 {
@@ -904,6 +772,7 @@ func summarizeMultipartText(reader io.Reader, originalSize int64, contentType st
 		return logDetailText{Original: int(originalSize), Omitted: true, Reason: "failed to marshal multipart summary"}
 	}
 	result := sanitizeTextBody(string(jsonData), "application/json")
+	result.Truncated = result.Truncated || truncated
 	result.Original = int(originalSize)
 	if len(omittedFiles) > 0 {
 		result.Omitted = true
@@ -918,14 +787,32 @@ func summarizeParsedMultipartForm(form *multipart.Form, originalSize int64) logD
 	}
 	summary := make(map[string]any)
 	fields := make(map[string][]string)
+	remaining := currentLogDetailTextLimitBytes()
+	truncated := false
+fieldsLoop:
 	for name, values := range form.Value {
 		for _, value := range values {
-			fields[name] = append(fields[name], truncatePlainText(value, currentLogDetailTextLimitBytes()))
+			remaining -= len(name) + 16
+			if remaining <= 0 {
+				truncated = true
+				break fieldsLoop
+			}
+			fields[name] = append(fields[name], truncatePlainText(value, remaining))
+			remaining -= len(value)
+			if remaining <= 0 {
+				truncated = true
+				break fieldsLoop
+			}
 		}
 	}
 	omittedFiles := make([]string, 0)
 	for name, files := range form.File {
 		if len(files) > 0 {
+			remaining -= len(name) + 8
+			if remaining <= 0 {
+				truncated = true
+				break
+			}
 			omittedFiles = append(omittedFiles, name)
 		}
 	}
@@ -938,6 +825,7 @@ func summarizeParsedMultipartForm(form *multipart.Form, originalSize int64) logD
 		return logDetailText{Original: int(originalSize), Omitted: true, Reason: "failed to marshal multipart summary"}
 	}
 	result := sanitizeTextBody(string(jsonData), "application/json")
+	result.Truncated = result.Truncated || truncated
 	result.Original = int(originalSize)
 	if len(omittedFiles) > 0 {
 		result.Omitted = true

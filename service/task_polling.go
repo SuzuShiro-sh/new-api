@@ -500,7 +500,15 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		key = privateData.Key
 	}
 	snap := task.Snapshot()
-	resp, err := adaptor.FetchTask(baseURL, key, task, proxy)
+	var resp *http.Response
+	var err error
+	if contextual, ok := adaptor.(interface {
+		FetchTaskWithContext(context.Context, string, string, *model.Task, string) (*http.Response, error)
+	}); ok {
+		resp, err = contextual.FetchTaskWithContext(ctx, baseURL, key, task, proxy)
+	} else {
+		resp, err = adaptor.FetchTask(baseURL, key, task, proxy)
+	}
 	if err != nil {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransport, 0, err.Error())
 	}

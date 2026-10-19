@@ -86,6 +86,9 @@ type LogDetail struct {
 	Payload          LogDetailPayloadBytes `json:"-"`
 	PayloadVersion   int                   `json:"-" gorm:"default:0"`
 	StoredBytes      int                   `json:"stored_bytes" gorm:"default:0"`
+	ArchiveBytes     int64                 `json:"archive_bytes"`
+	ArchiveComplete  bool                  `json:"archive_complete"`
+	Archive          io.Reader             `json:"-" gorm:"-"`
 	RequestBody      LogDetailLargeText    `json:"request_body"`
 	RequestParams    LogDetailLargeText    `json:"request_params"`
 	ResponseBody     LogDetailLargeText    `json:"response_body"`
@@ -248,11 +251,19 @@ func SaveLogDetailIfLogExists(ctx context.Context, detail *LogDetail) (bool, err
 			"response_body", "raw_response_body", "error_body", "content_truncated",
 			"content_omitted", "omit_reason",
 		}
+		if detail.Archive != nil {
+			updates = append(updates, "archive_bytes", "archive_complete")
+		}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "request_id"}},
 			DoUpdates: clause.AssignmentColumns(updates),
 		}).Create(detail).Error; err != nil {
 			return err
+		}
+		if detail.Archive != nil {
+			if err := saveLogDetailArchive(tx, detail); err != nil {
+				return err
+			}
 		}
 		saved = true
 		return nil

@@ -653,19 +653,24 @@ func (a *TaskAdaptor) FetchBatchTasks(baseURL, key string, tasks []*model.Task, 
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, descriptor)
+	return a.doFetchDescriptor(context.Background(), baseURL, proxy, descriptor)
 }
 
 func (a *TaskAdaptor) FetchTask(baseURL, key string, task *model.Task, proxy string) (*http.Response, error) {
+	return a.FetchTaskWithContext(context.Background(), baseURL, key, task, proxy)
+}
+
+// FetchTaskWithContext 保留同步图片请求的取消信号和原始流量采集上下文。
+func (a *TaskAdaptor) FetchTaskWithContext(requestContext context.Context, baseURL, key string, task *model.Task, proxy string) (*http.Response, error) {
 	ctx, err := a.queryContext(task, key, baseURL, proxy)
 	if err != nil {
 		return nil, err
 	}
-	descriptor, err := a.requestDescriptor(pluginruntime.WithFetcher(context.Background(), a.hookFetcher(baseURL, proxy)), "buildQueryRequest", ctx)
+	descriptor, err := a.requestDescriptor(pluginruntime.WithFetcher(requestContext, a.hookFetcher(baseURL, proxy)), "buildQueryRequest", ctx)
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, descriptor)
+	return a.doFetchDescriptor(requestContext, baseURL, proxy, descriptor)
 }
 
 // hookFetcher sends a driver hook's utils.fetch requests to the hosts its
@@ -714,7 +719,7 @@ func (a *TaskAdaptor) hookFetcher(baseURL, proxy string) pluginruntime.Fetcher {
 	}
 }
 
-func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, descriptor requestDescriptor) (*http.Response, error) {
+func (a *TaskAdaptor) doFetchDescriptor(ctx context.Context, baseURL, proxy string, descriptor requestDescriptor) (*http.Response, error) {
 	if err := pluginruntime.ValidateRequestURL(descriptor.URL, baseURL, a.plugin.Meta.AllowedHosts); err != nil {
 		return nil, err
 	}
@@ -736,7 +741,7 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, descriptor reques
 	if method == "" {
 		method = http.MethodGet
 	}
-	req, err := http.NewRequest(method, descriptor.URL, requestBody)
+	req, err := http.NewRequestWithContext(ctx, method, descriptor.URL, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -875,7 +880,11 @@ func (a *TaskAdaptor) ParseTaskResult(task *model.Task, resp *http.Response, bod
 	if err != nil {
 		return nil, err
 	}
-	value, err := a.plugin.Engine.Call(pluginruntime.WithFetcher(context.Background(), a.hookFetcher(baseURL, proxy)), "parseTaskResult", ctx, input, hookHTTPResponse(resp))
+	requestContext := context.Background()
+	if resp != nil && resp.Request != nil {
+		requestContext = resp.Request.Context()
+	}
+	value, err := a.plugin.Engine.Call(pluginruntime.WithFetcher(requestContext, a.hookFetcher(baseURL, proxy)), "parseTaskResult", ctx, input, hookHTTPResponse(resp))
 	if err != nil {
 		logger.LogDebug(context.Background(), "task_plugin subsystem=adaptor event=parse_task_failed plugin=%q reason=hook_failed body_bytes=%d elapsed_ms=%d", a.plugin.Meta.Key, len(body), time.Since(started).Milliseconds())
 		return nil, err

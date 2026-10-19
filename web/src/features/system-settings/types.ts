@@ -379,6 +379,7 @@ export type OperationsSettings = {
   'log_setting.user_export_enabled': boolean
   'log_setting.max_range_days': number
   LogDetailEnabled: boolean
+  LogDetailFullCaptureEnabled: boolean
   LogDetailRetentionDays: number
   LogDetailMaxBodyKB: number
   'performance_setting.disk_cache_enabled': boolean
