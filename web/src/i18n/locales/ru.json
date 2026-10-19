@@ -7422,6 +7422,13 @@
     "The database will also be compacted to return reusable space to the operating system.": "База данных также будет уплотнена, чтобы вернуть повторно используемое место операционной системе.",
     "This permanently deletes every stored request and response detail and reclaims the detail table storage. Usage and billing logs will be kept.": "Все сохраненные сведения о запросах и ответах будут удалены без возможности восстановления, а место таблицы деталей будет освобождено. Журналы использования и списаний будут сохранены.",
     "This will permanently remove request and response details older than {{days}} days. Usage and billing logs will be kept.": "Сведения о запросах и ответах старше {{days}} дней будут удалены без возможности восстановления. Журналы использования и списаний сохранятся.",
-    "Truncated": "Обрезано"
+    "Truncated": "Обрезано",
+    "A log detail cleanup task with different parameters is already active": "Уже выполняется очистка подробных журналов с другими параметрами",
+    "Capture original traffic for debugging": "Записывать исходный трафик для отладки",
+    "Download original traffic": "Скачать исходный трафик",
+    "Failed to download original traffic": "Не удалось скачать исходный трафик",
+    "Original traffic capture is incomplete": "Исходный трафик записан не полностью",
+    "Preview sections are truncated independently at this limit. Original traffic archives are not truncated by this setting.": "Каждый раздел предпросмотра обрезается до этого предела. На архив исходного трафика этот предел не распространяется.",
+    "Save original bodies, images, binary data, and stream events in a downloadable archive. Credentials in headers and URLs are redacted. Uses temporary disk space and additional database storage. Applies only to API keys with detail logging enabled.": "Сохраняет исходные тела, изображения, двоичные данные и события потока в скачиваемый архив. Учётные данные в заголовках и URL скрываются. Требуются временное место на диске и дополнительное место в базе. Только для API-ключей с включённым подробным журналированием."
   }
 }

@@ -5,10 +5,12 @@ const (
 	MinLogDetailBodyKB        = 16
 	MaxLogDetailBodyKB        = 5 * 1024
 	MaxLogDetailRetentionDays = 3650
+	DefaultLogDetailBodyKB    = 256
 )
 
 var (
-	LogDetailEnabled       = true
-	LogDetailRetentionDays = 3
-	LogDetailMaxBodyKB     = MaxLogDetailBodyKB
+	LogDetailEnabled            = true
+	LogDetailRetentionDays      = 3
+	LogDetailMaxBodyKB          = DefaultLogDetailBodyKB
+	LogDetailFullCaptureEnabled = false
 )

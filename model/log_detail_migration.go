@@ -33,7 +33,7 @@ func migrateLogDetailDatabase(db *gorm.DB) error {
 	if db == nil {
 		return errors.New("log database is not initialized")
 	}
-	if err := db.AutoMigrate(&LogDetail{}); err != nil {
+	if err := db.AutoMigrate(&LogDetail{}, &LogDetailArchiveChunk{}); err != nil {
 		return err
 	}
 	return migrateLogDetailLargeTextColumns(db)

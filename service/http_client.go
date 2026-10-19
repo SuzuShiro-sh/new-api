@@ -123,7 +123,7 @@ func newRelayHTTPTransport() *http.Transport {
 
 func newRelayHTTPClient(transport http.RoundTripper) *http.Client {
 	client := &http.Client{
-		Transport:     transport,
+		Transport:     &logDetailTransport{RoundTripper: transport},
 		CheckRedirect: checkRedirect,
 	}
 	if common.RelayTimeout != 0 {

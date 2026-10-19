@@ -114,6 +114,10 @@ export function downloadCsv(filename: string, lines: string[]): void {
   const blob = new Blob(['\uFEFF', ...lines], {
     type: 'text/csv;charset=utf-8',
   })
+  downloadBlob(blob, filename)
+}
+
+export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url

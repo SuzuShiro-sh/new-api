@@ -41,7 +41,7 @@ func respondLogDetailTask(c *gin.Context, task *model.SystemTask, err error) {
 
 	conflict := &service.LogDetailCleanupConflictError{}
 	if errors.As(err, &conflict) {
-		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("A log detail cleanup task with a different mode is already active"), gin.H{
+		common.ApiErrorStatus(c, http.StatusConflict, common.NewMessage("A log detail cleanup task with different parameters is already active"), gin.H{
 			"data": gin.H{
 				"requested_mode": conflict.RequestedMode,
 				"active_mode":    conflict.ActiveMode,

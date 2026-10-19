@@ -858,7 +858,7 @@ export function parseBatchResult() {return [];}
 			http.Redirect(w, r, target.URL+"/final", http.StatusFound)
 		}))
 		defer origin.Close()
-		resp, err := New(defaultPlugin).doFetchDescriptor(origin.URL, "", "", requestDescriptor{
+		resp, err := New(defaultPlugin).doFetchDescriptor(context.Background(), origin.URL, "", "", requestDescriptor{
 			URL:     origin.URL + "/query?key=query-secret",
 			Headers: map[string]string{"X-API-Key": "channel-secret", "x-goog-api-key": "channel-secret", "X-Vendor-Credential": "channel-secret"},
 		})
@@ -983,7 +983,7 @@ export function parseBatchResult() { return {}; }
 		"re:^X-Trace-":  true,
 		"X-Client":      "{client_header:X-Trace-Id}",
 	}
-	for _, mode := range []string{"submit", "poll", "batch"} {
+	for _, mode := range []string{"submit", "poll", "poll with context", "batch"} {
 		for _, tc := range []struct {
 			name    string
 			headers map[string]any
@@ -1030,6 +1030,9 @@ export function parseBatchResult() { return {}; }
 				case "poll":
 					wantKey, wantPlugin = "task-key", "query"
 					resp, requestErr = adaptor.FetchTask(server.URL, "argument-key", task, "")
+				case "poll with context":
+					wantKey, wantPlugin = "task-key", "query"
+					resp, requestErr = adaptor.FetchTaskWithContext(context.Background(), server.URL, "argument-key", task, "")
 				case "batch":
 					wantKey, wantPlugin = "batch-key", "batch"
 					resp, requestErr = adaptor.FetchBatchTasks(server.URL, "batch-key", []*model.Task{task}, "")

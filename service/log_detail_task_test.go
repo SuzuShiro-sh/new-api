@@ -25,9 +25,17 @@ func TestStartLogDetailClearAllRejectsDifferentActiveMode(t *testing.T) {
 	assert.Equal(t, LogDetailCleanupModeAll, conflict.RequestedMode)
 	assert.Equal(t, LogDetailCleanupModeExpired, conflict.ActiveMode)
 
-	reused, err := StartLogDetailCleanupTask(30, true)
+	reused, err := StartLogDetailCleanupTask(20, false)
 	require.NoError(t, err)
 	assert.Equal(t, active.TaskID, reused.TaskID)
+	for _, request := range []struct {
+		cutoff  int64
+		reclaim bool
+	}{{30, false}, {20, true}, {30, true}} {
+		reused, err = StartLogDetailCleanupTask(request.cutoff, request.reclaim)
+		assert.Nil(t, reused)
+		require.ErrorAs(t, err, &conflict)
+	}
 }
 
 func TestScheduledLogDetailCleanupUsesCurrentRetention(t *testing.T) {

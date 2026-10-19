@@ -7422,6 +7422,13 @@
     "The database will also be compacted to return reusable space to the operating system.": "数据库还将进行压缩，以向操作系统归还可用空间。",
     "This permanently deletes every stored request and response detail and reclaims the detail table storage. Usage and billing logs will be kept.": "此操作会永久删除所有已存储的请求和响应详情，并回收详情表空间。使用和计费日志会保留。",
     "This will permanently remove request and response details older than {{days}} days. Usage and billing logs will be kept.": "这将永久删除 {{days}} 天前的请求和响应详情，但保留使用和计费日志。",
-    "Truncated": "已截断"
+    "Truncated": "已截断",
+    "A log detail cleanup task with different parameters is already active": "已有参数不同的详情清理任务正在执行",
+    "Capture original traffic for debugging": "记录原始流量用于调试",
+    "Download original traffic": "下载原始流量",
+    "Failed to download original traffic": "下载原始流量失败",
+    "Original traffic capture is incomplete": "原始流量记录不完整",
+    "Preview sections are truncated independently at this limit. Original traffic archives are not truncated by this setting.": "各段预览按此上限独立截断，原始流量归档不受此设置截断。",
+    "Save original bodies, images, binary data, and stream events in a downloadable archive. Credentials in headers and URLs are redacted. Uses temporary disk space and additional database storage. Applies only to API keys with detail logging enabled.": "将原始正文、图片、二进制数据和流式事件保存为可下载的归档。请求头和网址中的凭据会被遮罩。需要临时磁盘空间和额外数据库空间。仅对开启详情记录的 API 密钥生效。"
   }
 }

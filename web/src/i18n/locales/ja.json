@@ -7422,6 +7422,13 @@
     "The database will also be compacted to return reusable space to the operating system.": "再利用可能な領域をOSに返すため、データベースも圧縮されます。",
     "This permanently deletes every stored request and response detail and reclaims the detail table storage. Usage and billing logs will be kept.": "保存されているすべてのリクエストとレスポンスの詳細を完全に削除し、詳細テーブルの領域を回収します。利用ログと請求ログは保持されます。",
     "This will permanently remove request and response details older than {{days}} days. Usage and billing logs will be kept.": "{{days}} 日より前のリクエストとレスポンスの詳細を完全に削除します。利用ログと請求ログは保持されます。",
-    "Truncated": "切り詰め済み"
+    "Truncated": "切り詰め済み",
+    "A log detail cleanup task with different parameters is already active": "異なるパラメーターの詳細ログ削除タスクが実行中です",
+    "Capture original traffic for debugging": "デバッグ用に元の通信を記録",
+    "Download original traffic": "元の通信をダウンロード",
+    "Failed to download original traffic": "元の通信のダウンロードに失敗しました",
+    "Original traffic capture is incomplete": "元の通信の記録は不完全です",
+    "Preview sections are truncated independently at this limit. Original traffic archives are not truncated by this setting.": "各プレビューはこの上限で個別に切り詰められます。元の通信アーカイブはこの設定では切り詰められません。",
+    "Save original bodies, images, binary data, and stream events in a downloadable archive. Credentials in headers and URLs are redacted. Uses temporary disk space and additional database storage. Applies only to API keys with detail logging enabled.": "元の本文、画像、バイナリ、ストリームイベントをダウンロード可能なアーカイブに保存します。ヘッダーと URL の認証情報はマスクされます。一時ディスク領域と追加のデータベース容量を使用します。詳細記録が有効な API キーにのみ適用されます。"
   }
 }

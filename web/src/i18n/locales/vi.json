@@ -7422,6 +7422,13 @@
     "The database will also be compacted to return reusable space to the operating system.": "Cơ sở dữ liệu cũng sẽ được thu gọn để trả dung lượng có thể tái sử dụng cho hệ điều hành.",
     "This permanently deletes every stored request and response detail and reclaims the detail table storage. Usage and billing logs will be kept.": "Thao tác này sẽ xóa vĩnh viễn toàn bộ chi tiết yêu cầu và phản hồi đã lưu, đồng thời thu hồi dung lượng bảng chi tiết. Nhật ký sử dụng và thanh toán vẫn được giữ lại.",
     "This will permanently remove request and response details older than {{days}} days. Usage and billing logs will be kept.": "Thao tác này sẽ xóa vĩnh viễn chi tiết yêu cầu và phản hồi cũ hơn {{days}} ngày. Nhật ký sử dụng và thanh toán vẫn được giữ lại.",
-    "Truncated": "Đã cắt bớt"
+    "Truncated": "Đã cắt bớt",
+    "A log detail cleanup task with different parameters is already active": "Đang có tác vụ dọn chi tiết nhật ký với tham số khác",
+    "Capture original traffic for debugging": "Ghi lưu lượng gốc để gỡ lỗi",
+    "Download original traffic": "Tải lưu lượng gốc",
+    "Failed to download original traffic": "Không thể tải lưu lượng gốc",
+    "Original traffic capture is incomplete": "Bản ghi lưu lượng gốc chưa đầy đủ",
+    "Preview sections are truncated independently at this limit. Original traffic archives are not truncated by this setting.": "Mỗi phần xem trước được cắt riêng theo giới hạn này. Cài đặt này không cắt tệp lưu trữ lưu lượng gốc.",
+    "Save original bodies, images, binary data, and stream events in a downloadable archive. Credentials in headers and URLs are redacted. Uses temporary disk space and additional database storage. Applies only to API keys with detail logging enabled.": "Lưu nội dung gốc, hình ảnh, dữ liệu nhị phân và sự kiện luồng vào tệp lưu trữ có thể tải xuống. Thông tin xác thực trong tiêu đề và URL được che đi. Sử dụng dung lượng đĩa tạm thời và dung lượng cơ sở dữ liệu bổ sung. Chỉ áp dụng cho khóa API đã bật ghi chi tiết."
   }
 }

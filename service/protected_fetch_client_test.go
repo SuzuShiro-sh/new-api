@@ -303,7 +303,7 @@ func TestProtectedFetchRoundTripperNoProxyUsesProtectedDialer(t *testing.T) {
 
 func TestProtectedFetchRoundTripperReusesTransportPerProxy(t *testing.T) {
 	client := newProtectedFetchHTTPClientWithDialer(nil, nil, nil)
-	roundTripper, ok := client.Transport.(*ssrfProtectedRoundTripper)
+	roundTripper, ok := client.Transport.(*logDetailTransport).RoundTripper.(*ssrfProtectedRoundTripper)
 	require.True(t, ok)
 
 	direct := roundTripper.transportFor(nil)

@@ -7422,6 +7422,13 @@
     "The database will also be compacted to return reusable space to the operating system.": "資料庫也會進行壓縮，以將可用空間歸還給作業系統。",
     "This permanently deletes every stored request and response detail and reclaims the detail table storage. Usage and billing logs will be kept.": "此操作會永久刪除所有已儲存的請求與回應詳情，並回收詳情資料表空間。使用與計費記錄會保留。",
     "This will permanently remove request and response details older than {{days}} days. Usage and billing logs will be kept.": "這會永久刪除 {{days}} 天前的請求與回應詳情，但會保留使用與計費記錄。",
-    "Truncated": "已截斷"
+    "Truncated": "已截斷",
+    "A log detail cleanup task with different parameters is already active": "已有參數不同的詳細記錄清理工作正在執行",
+    "Capture original traffic for debugging": "記錄原始流量以供除錯",
+    "Download original traffic": "下載原始流量",
+    "Failed to download original traffic": "下載原始流量失敗",
+    "Original traffic capture is incomplete": "原始流量記錄不完整",
+    "Preview sections are truncated independently at this limit. Original traffic archives are not truncated by this setting.": "各段預覽依此上限獨立截斷，原始流量封存檔不受此設定截斷。",
+    "Save original bodies, images, binary data, and stream events in a downloadable archive. Credentials in headers and URLs are redacted. Uses temporary disk space and additional database storage. Applies only to API keys with detail logging enabled.": "將原始本文、圖片、二進位資料和串流事件儲存為可下載的封存檔。標頭和網址中的憑證會被遮蔽。需要暫存磁碟空間及額外資料庫空間。僅對啟用詳細記錄的 API 金鑰生效。"
   }
 }
