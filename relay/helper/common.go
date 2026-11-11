@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
@@ -257,7 +258,12 @@ func PingData(c *gin.Context) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	if _, err := c.Writer.Write([]byte(": PING\n\n")); err != nil {
+	data := ": PING\n\n"
+	if c.Request != nil && relayconstant.Path2RelayMode(c.Request.URL.Path) == relayconstant.RelayModeGemini {
+		// 部分 Gemini 客户端会拒绝 SSE 注释；空 JSON 帧可保活且不产生候选内容。
+		data = "data: {}\n\n"
+	}
+	if _, err := c.Writer.Write([]byte(data)); err != nil {
 		return fmt.Errorf("write ping data failed: %w", err)
 	}
 	return FlushWriter(c)

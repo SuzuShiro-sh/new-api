@@ -33,6 +33,29 @@ func (w *headerCommitWriter) WriteHeader(code int) {
 	w.ResponseRecorder.WriteHeader(code)
 }
 
+func TestPingDataProtocolFrames(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "gemini v1beta", path: "/v1beta/models/gemini-test:streamGenerateContent?alt=sse", want: "data: {}\n\n"},
+		{name: "gemini v1", path: "/v1/models/gemini-test:streamGenerateContent?alt=sse", want: "data: {}\n\n"},
+		{name: "openai", path: "/v1/chat/completions", want: ": PING\n\n"},
+		{name: "claude", path: "/v1/messages", want: ": PING\n\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(writer)
+			c.Request = httptest.NewRequest(http.MethodPost, test.path, nil)
+
+			require.NoError(t, PingData(c))
+			assert.Equal(t, test.want, writer.Body.String())
+			assert.True(t, writer.Flushed)
+		})
+	}
+}
+
 func TestStreamScannerHandler_RequestKeepAliveHandoff(t *testing.T) {
 	settings := operation_setting.GetGeneralSetting()
 	previousEnabled, previousInterval := settings.PingIntervalEnabled, settings.PingIntervalSeconds

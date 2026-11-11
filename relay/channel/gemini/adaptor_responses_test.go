@@ -7,11 +7,40 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGetRequestURL_GeminiStreamPreservesPingSetting(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		disablePing bool
+	}{
+		{name: "allowed"},
+		{name: "explicitly disabled", disablePing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{
+				RelayMode:   constant.RelayModeGemini,
+				IsStream:    true,
+				DisablePing: test.disablePing,
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelBaseUrl:    "https://gateway.example",
+					UpstreamModelName: "gemini-test",
+				},
+			}
+
+			url, err := (&Adaptor{}).GetRequestURL(info)
+
+			require.NoError(t, err)
+			assert.Equal(t, "https://gateway.example/v1beta/models/gemini-test:streamGenerateContent?alt=sse", url)
+			assert.Equal(t, test.disablePing, info.DisablePing)
+		})
+	}
+}
 
 func TestConvertOpenAIResponsesRequestToGeminiInstructionsAndInput(t *testing.T) {
 	got := mustConvertResponsesToGemini(t, dto.OpenAIResponsesRequest{
